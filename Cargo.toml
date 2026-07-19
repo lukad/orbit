@@ -1,5 +1,5 @@
 [workspace]
-members = ["common", "orbit", "parser"]
+members = ["common", "orbit", "parser", "resolver"]
 resolver = "3"
 
 [workspace.package]
@@ -19,6 +19,7 @@ thiserror = "2"
 tracing = { version = "0.1" }
 orbit-common = { path = "./common" }
 orbit-parser = { path = "./parser" }
+orbit-resolver = { path = "./resolver" }
 
 [profile.release]
 lto = true
