@@ -1,7 +1,7 @@
 use std::{path::Path, process::ExitCode};
 
 use orbit_common::SourceId;
-use orbit_vm::{Environment, VmError, VmTraceFrame};
+use orbit_vm::{VmError, VmTraceFrame};
 
 fn main() -> ExitCode {
     let path = std::env::args_os()
@@ -13,12 +13,9 @@ fn main() -> ExitCode {
     let ast = orbit_parser::parser::parse_chunk(source_id, &tokens).unwrap();
     let hir = orbit_resolver::resolve(&ast).unwrap();
     let compiled = orbit_compiler::compile(hir).unwrap();
-    let environment = Environment::new();
+    let environment = orbit_stdlib::default_environment().unwrap();
     match orbit_vm::execute(&compiled, &environment) {
-        Ok(values) => {
-            println!("{values:?}");
-            ExitCode::SUCCESS
-        }
+        Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             print_runtime_error(Path::new(&path), &source, &error);
             ExitCode::FAILURE

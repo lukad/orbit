@@ -129,6 +129,8 @@ pub enum VmErrorKind {
     },
     #[error("generic for requires at least one visible variable")]
     InvalidGenericForVariableCount,
+    #[error("native function failed: {message}")]
+    NativeFunctionFailure { message: Box<str> },
 }
 
 type FaultResult<T> = Result<T, VmErrorKind>;

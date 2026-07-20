@@ -69,6 +69,7 @@ dependencies = [
  "orbit-compiler",
  "orbit-parser",
  "orbit-resolver",
+ "orbit-stdlib",
  "orbit-vm",
 ]
 
@@ -102,6 +103,13 @@ version = "0.1.0"
 dependencies = [
  "orbit-common",
  "orbit-parser",
+]
+
+[[package]]
+name = "orbit-stdlib"
+version = "0.1.0"
+dependencies = [
+ "orbit-vm",
 ]
 
 [[package]]
