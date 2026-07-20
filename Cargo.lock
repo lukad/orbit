@@ -69,6 +69,7 @@ dependencies = [
  "orbit-compiler",
  "orbit-parser",
  "orbit-resolver",
+ "orbit-vm",
 ]
 
 [[package]]
@@ -101,6 +102,17 @@ version = "0.1.0"
 dependencies = [
  "orbit-common",
  "orbit-parser",
+]
+
+[[package]]
+name = "orbit-vm"
+version = "0.1.0"
+dependencies = [
+ "orbit-common",
+ "orbit-compiler",
+ "orbit-parser",
+ "orbit-resolver",
+ "thiserror",
 ]
 
 [[package]]
