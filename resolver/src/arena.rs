@@ -44,6 +44,13 @@ where
         self.values.is_empty()
     }
 
+    pub(crate) fn map<U>(self, map: impl FnMut(T) -> U) -> Arena<I, U> {
+        Arena {
+            values: self.values.into_iter().map(map).collect(),
+            marker: PhantomData,
+        }
+    }
+
     pub fn get(&self, id: I) -> Option<&T> {
         self.values.get(Into::<u32>::into(id) as usize)
     }

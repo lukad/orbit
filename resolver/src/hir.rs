@@ -46,7 +46,7 @@ pub struct LoopId(pub u32);
 pub struct LabelId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StringId(pub u32);
+pub struct StringId(u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChildFunctionId(pub u32);
@@ -57,8 +57,32 @@ arena_ids!(
 
 #[derive(Debug)]
 pub struct HirChunk {
-    pub strings: Vec<Box<[u8]>>,
-    pub entry: HirFunction,
+    pub(crate) strings: Vec<Box<[u8]>>,
+    pub(crate) entry: HirFunction,
+}
+
+impl HirChunk {
+    pub fn strings(&self) -> &[Box<[u8]>] {
+        &self.strings
+    }
+
+    pub fn entry(&self) -> &HirFunction {
+        &self.entry
+    }
+
+    pub fn into_parts(self) -> (Vec<Box<[u8]>>, HirFunction) {
+        (self.strings, self.entry)
+    }
+}
+
+impl StringId {
+    pub(crate) fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub fn get(self) -> u32 {
+        self.0
+    }
 }
 
 #[derive(Debug)]
@@ -72,7 +96,9 @@ pub struct HirFunction {
     pub blocks: Arena<BlockId, HirBlock>,
     pub statements: Arena<StmtId, HirStmt>,
     pub expressions: Arena<ExprId, HirExpr>,
-    pub loops: Arena<LoopId, HirLoop>,
+    /// Number of loop identities allocated by the resolver. Loop structure
+    /// itself lives in `HirStmtKind`, so it cannot disagree with a second table.
+    pub loop_count: usize,
     pub labels: Arena<LabelId, HirLabel>,
     pub children: Vec<HirFunction>,
     pub body: BlockId,
@@ -82,21 +108,9 @@ pub struct HirFunction {
 pub struct HirLocal {
     pub name: Symbol,
     pub span: Span,
-    pub scope: ScopeId,
-    pub kind: LocalKind,
     pub attribute: Option<LocalAttribute>,
     /// A nested function captures this local
     pub captured: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocalKind {
-    Parameter,
-    Variable,
-    /// Variables introduced by the numeric-for construct
-    NumericForControl,
-    /// User-visible variables introduced by a generic-for construct
-    GenericForVariable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +139,6 @@ pub enum UpvalueSource {
 #[derive(Debug)]
 pub struct HirScope {
     pub parent: Option<ScopeId>,
-    pub locals: Vec<LocalId>,
     pub has_captured_locals: bool,
     pub has_to_be_closed_locals: bool,
 }
@@ -346,22 +359,6 @@ pub struct HirConditionalBranch {
     pub span: Span,
     pub condition: ExprId,
     pub body: BlockId,
-}
-
-#[derive(Debug)]
-pub struct HirLoop {
-    pub span: Span,
-    pub kind: HirLoopKind,
-    pub parent_scope: ScopeId,
-    pub body_scope: ScopeId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HirLoopKind {
-    While,
-    Repeat,
-    NumericFor,
-    GenericFor,
 }
 
 #[derive(Debug)]

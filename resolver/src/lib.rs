@@ -14,10 +14,10 @@ use crate::{
     arena::Arena,
     hir::{
         BinaryOperator, Binding, BlockId, ChildFunctionId, ExitPlan, ExprId, HirBlock, HirChunk,
-        HirConditionalBranch, HirExpr, HirExprKind, HirFunction, HirLabel, HirLocal, HirLoop,
-        HirLoopKind, HirPlace, HirPlaceKind, HirScope, HirStmt, HirStmtKind, HirTableField,
-        HirUpvalue, LabelId, LocalAttribute, LocalId, LocalKind, LoopId, ScopeId, StmtId, StringId,
-        UnaryOperator, UpvalueId, UpvalueSource,
+        HirConditionalBranch, HirExpr, HirExprKind, HirFunction, HirLabel, HirLocal, HirPlace,
+        HirPlaceKind, HirScope, HirStmt, HirStmtKind, HirTableField, HirUpvalue, LabelId,
+        LocalAttribute, LocalId, LoopId, ScopeId, StmtId, StringId, UnaryOperator, UpvalueId,
+        UpvalueSource,
     },
 };
 
@@ -136,13 +136,13 @@ impl<'ast> Resolver<'ast> {
             span: function.span,
             parameters: function.parameters,
             is_vararg: function.is_vararg,
-            locals: function.locals,
+            locals: function.locals.map(|local| local.hir),
             upvalues: function.upvalues,
             scopes: function.scopes,
             blocks: function.blocks,
             statements: function.statements,
             expressions: function.expressions,
-            loops: function.loops,
+            loop_count: function.loops.len(),
             labels: function.labels,
             children: function.children,
             body,
@@ -182,7 +182,7 @@ impl<'ast> Resolver<'ast> {
 
         let parameter_ids = parameters
             .iter()
-            .map(|parameter| self.declare_local(parameter.clone(), LocalKind::Parameter, None))
+            .map(|parameter| self.declare_local(parameter.clone(), None))
             .collect::<Vec<_>>();
         self.current_function_mut().parameters = parameter_ids;
         self.current_function_mut()
@@ -191,7 +191,7 @@ impl<'ast> Resolver<'ast> {
             .unwrap()
             .trailing_label_local_count = self.current_function().active_locals.len();
 
-        let statements = self.resolve_block_contents(body);
+        let statements = self.resolve_block_contents(body, true);
         let block = self.push_block(body.span, scope, statements);
         self.finish_scope();
         block
@@ -200,16 +200,17 @@ impl<'ast> Resolver<'ast> {
     fn resolve_scoped_block(&mut self, body: &Block) -> BlockId {
         let scope = self.enter_scope();
         self.predeclare_labels(body);
-        let statements = self.resolve_block_contents(body);
+        let statements = self.resolve_block_contents(body, true);
         let block = self.push_block(body.span, scope, statements);
         self.finish_scope();
         block
     }
 
-    fn resolve_block_contents(&mut self, body: &Block) -> Vec<StmtId> {
+    fn resolve_block_contents(&mut self, body: &Block, allow_trailing_labels: bool) -> Vec<StmtId> {
         let mut statements = Vec::new();
         for (index, statement) in body.statements.iter().enumerate() {
-            let trailing_label = body.return_statement.is_none()
+            let trailing_label = allow_trailing_labels
+                && body.return_statement.is_none()
                 && body.statements[index + 1..].iter().all(|statement| {
                     matches!(statement.kind, StmtKind::Empty | StmtKind::Label(_))
                 });
@@ -240,7 +241,6 @@ impl<'ast> Resolver<'ast> {
             .map(|scope| scope.id);
         let scope = self.current_function_mut().scopes.push(HirScope {
             parent,
-            locals: Vec::new(),
             has_captured_locals: false,
             has_to_be_closed_locals: false,
         });
@@ -319,19 +319,18 @@ impl<'ast> Resolver<'ast> {
     fn declare_local(
         &mut self,
         name: Spanned<Symbol>,
-        kind: LocalKind,
         attribute: Option<LocalAttribute>,
     ) -> LocalId {
         let scope = self.current_scope();
-        let local = self.current_function_mut().locals.push(HirLocal {
-            name: name.value.clone(),
-            span: name.span,
+        let local = self.current_function_mut().locals.push(LocalInfo {
+            hir: HirLocal {
+                name: name.value.clone(),
+                span: name.span,
+                attribute,
+                captured: false,
+            },
             scope,
-            kind,
-            attribute,
-            captured: false,
         });
-        self.current_function_mut().scopes[scope].locals.push(local);
         if attribute == Some(LocalAttribute::Close) {
             self.current_function_mut().scopes[scope].has_to_be_closed_locals = true;
         }
@@ -424,7 +423,7 @@ impl<'ast> Resolver<'ast> {
 
     fn mark_captured(&mut self, function_index: usize, local: LocalId) {
         let function = &mut self.functions[function_index];
-        function.locals[local].captured = true;
+        function.locals[local].hir.captured = true;
         let scope = function.locals[local].scope;
         function.scopes[scope].has_captured_locals = true;
     }
@@ -558,13 +557,7 @@ impl<'ast> Resolver<'ast> {
 
         let locals = names
             .iter()
-            .map(|name| {
-                self.declare_local(
-                    name.name.clone(),
-                    LocalKind::Variable,
-                    Self::resolve_attribute(name),
-                )
-            })
+            .map(|name| self.declare_local(name.name.clone(), Self::resolve_attribute(name)))
             .collect();
         self.push_statement(span, HirStmtKind::Local { locals, values })
     }
@@ -585,7 +578,7 @@ impl<'ast> Resolver<'ast> {
         name: &Spanned<Symbol>,
         body: &FunctionBody,
     ) -> StmtId {
-        let local = self.declare_local(name.clone(), LocalKind::Variable, None);
+        let local = self.declare_local(name.clone(), None);
         let child = self.resolve_nested_function(body, None);
         let closure = self.push_expression(body.span, HirExprKind::Closure(child));
         self.push_statement(
@@ -657,9 +650,9 @@ impl<'ast> Resolver<'ast> {
         let parent_scope = self.current_scope();
         let body_scope = self.enter_scope();
         self.predeclare_labels(body);
-        let loop_id = self.push_loop(span, HirLoopKind::While, parent_scope, body_scope);
+        let loop_id = self.push_loop(parent_scope);
         self.current_function_mut().loop_stack.push(loop_id);
-        let statements = self.resolve_block_contents(body);
+        let statements = self.resolve_block_contents(body, true);
         let body = self.push_block(body.span, body_scope, statements);
         self.current_function_mut().loop_stack.pop();
         self.finish_scope();
@@ -677,9 +670,11 @@ impl<'ast> Resolver<'ast> {
         let parent_scope = self.current_scope();
         let body_scope = self.enter_scope();
         self.predeclare_labels(body);
-        let loop_id = self.push_loop(span, HirLoopKind::Repeat, parent_scope, body_scope);
+        let loop_id = self.push_loop(parent_scope);
         self.current_function_mut().loop_stack.push(loop_id);
-        let statements = self.resolve_block_contents(body);
+        // Repeat-body locals remain in scope through the condition, so a label
+        // immediately before `until` is not outside those locals' scopes.
+        let statements = self.resolve_block_contents(body, false);
         // Unlike other loops, locals declared in a repeat body are visible in its condition.
         let condition = self.resolve_expression(condition);
         let body = self.push_block(body.span, body_scope, statements);
@@ -710,10 +705,10 @@ impl<'ast> Resolver<'ast> {
         let parent_scope = self.current_scope();
         let body_scope = self.enter_scope();
         self.predeclare_labels(body);
-        let variable = self.declare_local(name.clone(), LocalKind::NumericForControl, None);
-        let loop_id = self.push_loop(span, HirLoopKind::NumericFor, parent_scope, body_scope);
+        let variable = self.declare_local(name.clone(), None);
+        let loop_id = self.push_loop(parent_scope);
         self.current_function_mut().loop_stack.push(loop_id);
-        let statements = self.resolve_block_contents(body);
+        let statements = self.resolve_block_contents(body, true);
         let body = self.push_block(body.span, body_scope, statements);
         self.current_function_mut().loop_stack.pop();
         self.finish_scope();
@@ -746,11 +741,11 @@ impl<'ast> Resolver<'ast> {
         self.predeclare_labels(body);
         let variables = names
             .iter()
-            .map(|name| self.declare_local(name.clone(), LocalKind::GenericForVariable, None))
+            .map(|name| self.declare_local(name.clone(), None))
             .collect();
-        let loop_id = self.push_loop(span, HirLoopKind::GenericFor, parent_scope, body_scope);
+        let loop_id = self.push_loop(parent_scope);
         self.current_function_mut().loop_stack.push(loop_id);
-        let statements = self.resolve_block_contents(body);
+        let statements = self.resolve_block_contents(body, true);
         let body = self.push_block(body.span, body_scope, statements);
         self.current_function_mut().loop_stack.pop();
         self.finish_scope();
@@ -765,19 +760,10 @@ impl<'ast> Resolver<'ast> {
         )
     }
 
-    fn push_loop(
-        &mut self,
-        span: Span,
-        kind: HirLoopKind,
-        parent_scope: ScopeId,
-        body_scope: ScopeId,
-    ) -> LoopId {
-        self.current_function_mut().loops.push(HirLoop {
-            span,
-            kind,
-            parent_scope,
-            body_scope,
-        })
+    fn push_loop(&mut self, parent_scope: ScopeId) -> LoopId {
+        self.current_function_mut()
+            .loops
+            .push(LoopInfo { parent_scope })
     }
 
     fn resolve_label(
@@ -852,7 +838,7 @@ impl<'ast> Resolver<'ast> {
                 .find(|local| !goto.active_locals.contains(local))
                 .copied()
             {
-                let local = &self.current_function().locals[local];
+                let local = &self.current_function().locals[local].hir;
                 self.diagnostics.push(Diagnostic::error(
                     goto.span,
                     format!(
@@ -929,7 +915,7 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn check_local_mutable(&self, local: LocalId, assignment_span: Span) -> Result<(), Diagnostic> {
-        let local = &self.current_function().locals[local];
+        let local = &self.current_function().locals[local].hir;
         if local.attribute.is_some() {
             return Err(Diagnostic::error(
                 assignment_span,
@@ -971,7 +957,7 @@ impl<'ast> Resolver<'ast> {
         match self.functions[function_index].upvalues[upvalue].source {
             UpvalueSource::ExternalEnvironment => None,
             UpvalueSource::ParentLocal(local) => {
-                let local = &self.functions[parent].locals[local];
+                let local = &self.functions[parent].locals[local].hir;
                 Some((local.name.clone(), local.span, local.attribute))
             }
             UpvalueSource::ParentUpvalue(upvalue) => self.captured_local(parent, upvalue),
@@ -1190,13 +1176,13 @@ struct FunctionBuilder {
     span: Span,
     is_vararg: bool,
     parameters: Vec<LocalId>,
-    locals: Arena<LocalId, HirLocal>,
+    locals: Arena<LocalId, LocalInfo>,
     upvalues: Arena<UpvalueId, HirUpvalue>,
     scopes: Arena<ScopeId, HirScope>,
     blocks: Arena<BlockId, HirBlock>,
     statements: Arena<StmtId, HirStmt>,
     expressions: Arena<ExprId, HirExpr>,
-    loops: Arena<LoopId, HirLoop>,
+    loops: Arena<LoopId, LoopInfo>,
     labels: Arena<LabelId, HirLabel>,
     children: Vec<HirFunction>,
     scope_stack: Vec<ScopeFrame>,
@@ -1238,6 +1224,19 @@ struct ScopeFrame {
     labels: HashMap<Symbol, LabelId>,
 }
 
+struct LocalInfo {
+    // Resolution-only ownership metadata. The emitted HIR has a single source
+    // of truth for local order in parameters and statements.
+    hir: HirLocal,
+    scope: ScopeId,
+}
+
+struct LoopInfo {
+    // Needed while resolving `break`, but redundant once the structured loop
+    // statement and its exit plan have been produced.
+    parent_scope: ScopeId,
+}
+
 struct PendingGoto {
     span: Span,
     target: LabelId,
@@ -1261,7 +1260,8 @@ impl StringPoolBuilder {
         if let Some(id) = self.ids.get(value) {
             return *id;
         }
-        let id = StringId(u32::try_from(self.strings.len()).expect("too many interned strings"));
+        let id =
+            StringId::new(u32::try_from(self.strings.len()).expect("too many interned strings"));
         let value: Box<[u8]> = value.into();
         self.ids.insert(value.clone(), id);
         self.strings.push(value);
@@ -1356,7 +1356,7 @@ mod tests {
             chunk.entry.statements[statements[10]].kind,
             HirStmtKind::Call { .. }
         ));
-        assert_eq!(chunk.entry.loops.len(), 4);
+        assert_eq!(chunk.entry.loop_count, 4);
         assert_eq!(chunk.entry.children.len(), 2);
     }
 
@@ -1421,7 +1421,11 @@ mod tests {
             resolved("local x = 1; local f = function() return function() return x end end");
         let root = &chunk.entry;
         assert!(root.locals[LocalId(0)].captured);
-        assert!(root.scopes[root.locals[LocalId(0)].scope].has_captured_locals);
+        assert!(
+            root.scopes
+                .iter()
+                .any(|(_, scope)| scope.has_captured_locals)
+        );
 
         let middle = &root.children[0];
         assert!(matches!(
@@ -1476,8 +1480,12 @@ mod tests {
         else {
             panic!("expected repeat loop")
         };
-        let body_scope = chunk.entry.blocks[body].scope;
-        let variable = chunk.entry.scopes[body_scope].locals[0];
+        let variable_statement = chunk.entry.blocks[body].statements[0];
+        let HirStmtKind::Local { locals, .. } = &chunk.entry.statements[variable_statement].kind
+        else {
+            panic!("expected local declaration")
+        };
+        let variable = locals[0];
         let HirExprKind::Binary { left, .. } = chunk.entry.expressions[condition].kind else {
             panic!("expected binary condition")
         };
@@ -1549,6 +1557,22 @@ mod tests {
         assert!(diagnostics[0].message.contains("crossed"));
 
         resolved("goto target; local skipped = 1; ::target::");
+    }
+
+    #[test]
+    fn repeat_body_labels_do_not_get_the_trailing_label_exemption() {
+        for source in [
+            "repeat goto done; local crossed = true; ::done:: until true",
+            "repeat goto done; local crossed = true; ::done:: until crossed",
+        ] {
+            let diagnostics =
+                resolve_source(source).expect_err("goto should not skip a repeat-body local");
+
+            assert_eq!(diagnostics.len(), 1);
+            assert!(diagnostics[0].message.contains("crossed"));
+        }
+
+        resolved("repeat do goto done; local skipped = true; ::done:: end until true");
     }
 
     #[test]

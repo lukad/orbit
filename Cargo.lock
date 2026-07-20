@@ -66,6 +66,7 @@ name = "orbit"
 version = "0.1.0"
 dependencies = [
  "orbit-common",
+ "orbit-compiler",
  "orbit-parser",
  "orbit-resolver",
 ]
@@ -73,6 +74,16 @@ dependencies = [
 [[package]]
 name = "orbit-common"
 version = "0.1.0"
+
+[[package]]
+name = "orbit-compiler"
+version = "0.1.0"
+dependencies = [
+ "orbit-common",
+ "orbit-parser",
+ "orbit-resolver",
+ "thiserror",
+]
 
 [[package]]
 name = "orbit-parser"

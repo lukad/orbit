@@ -9,5 +9,6 @@ fn main() {
     let tokens = orbit_parser::lexer::lex(source_id, &source).unwrap();
     let ast = orbit_parser::parser::parse_chunk(source_id, &tokens).unwrap();
     let hir = orbit_resolver::resolve(&ast).unwrap();
-    println!("{hir:#?}");
+    let compiled = orbit_compiler::compile(hir).unwrap();
+    println!("{compiled:#?}");
 }

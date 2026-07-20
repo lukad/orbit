@@ -1,5 +1,5 @@
 [package]
-name = "orbit"
+name = "orbit-compiler"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,8 @@ version.workspace = true
 
 [dependencies]
 orbit-common.workspace = true
-orbit-compiler.workspace = true
-orbit-parser.workspace = true
 orbit-resolver.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+orbit-parser.workspace = true
