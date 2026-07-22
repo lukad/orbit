@@ -1,4 +1,4 @@
-use orbit_vm::{State, Value, VmResult};
+use orbit_vm::{LuaString, State, Value, VmResult};
 
 mod assert;
 mod dofile;
@@ -13,6 +13,10 @@ mod tostring;
 mod typ;
 
 pub fn install(state: &mut State) -> VmResult<()> {
+    let globals = state.globals()?;
+    state.set_global(b"_G", &Value::Table(globals))?;
+    state.set_global(b"_VERSION", &Value::String(LuaString::from("Lua 5.4")))?;
+
     let tostring = state.create_native_function("tostring", tostring::callback, &[])?;
     state.set_global(b"tostring", &Value::Function(tostring.clone()))?;
 
