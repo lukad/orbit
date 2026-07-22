@@ -19,6 +19,21 @@ pub(crate) fn type_error(
     ))
 }
 
+pub(crate) fn index_out_of_range(function: &'static str, argument: usize) -> VmError {
+    failure(format!(
+        "bad argument #{argument} to '{function}' (index out of range)"
+    ))
+}
+
+pub(crate) fn number_has_no_integer_representation(
+    function: &'static str,
+    argument: usize,
+) -> VmError {
+    failure(format!(
+        "bad argument #{argument} to '{function}' (number has no integer representation)"
+    ))
+}
+
 pub(crate) fn failure(message: impl Into<Box<str>>) -> VmError {
     VmErrorKind::NativeFunctionFailure {
         message: message.into(),

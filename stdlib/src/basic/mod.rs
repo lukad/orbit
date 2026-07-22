@@ -8,6 +8,7 @@ mod next;
 mod pairs;
 mod print;
 mod rawget;
+mod select;
 mod setmetatable;
 mod tostring;
 mod typ;
@@ -55,6 +56,9 @@ pub fn install(state: &mut State) -> VmResult<()> {
 
     let dofile = state.create_native_function("dofile", dofile::callback, &[])?;
     state.set_global(b"dofile", &Value::Function(dofile))?;
+
+    let select = state.create_native_function("select", select::callback, &[])?;
+    state.set_global(b"select", &Value::Function(select))?;
 
     Ok(())
 }
