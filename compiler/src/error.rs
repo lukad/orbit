@@ -1,13 +1,13 @@
 use orbit_common::Span;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{kind}")]
 pub struct CompileError {
     pub span: Span,
     pub kind: CompileErrorKind,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CompileErrorKind {
     #[error("function requires {required} registers, but at most 256 are supported")]
     TooManyRegisters { required: u32 },

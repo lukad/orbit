@@ -7,9 +7,9 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+ariadne.workspace = true
 orbit-common.workspace = true
 orbit-compiler.workspace = true
-orbit-parser.workspace = true
-orbit-resolver.workspace = true
+orbit-loader.workspace = true
 orbit-stdlib.workspace = true
 orbit-vm.workspace = true

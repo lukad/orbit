@@ -1,5 +1,5 @@
 [package]
-name = "orbit-stdlib"
+name = "orbit-loader"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,9 +7,8 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-orbit-vm.workspace = true
-
-[dev-dependencies]
 orbit-common.workspace = true
 orbit-compiler.workspace = true
-orbit-loader.workspace = true
+orbit-parser.workspace = true
+orbit-resolver.workspace = true
+orbit-vm.workspace = true

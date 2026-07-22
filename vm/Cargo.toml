@@ -9,8 +9,6 @@ version.workspace = true
 [dependencies]
 orbit-common.workspace = true
 orbit-compiler.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
 orbit-parser.workspace = true
 orbit-resolver.workspace = true
+thiserror.workspace = true

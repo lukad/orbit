@@ -1,5 +1,5 @@
 [workspace]
-members = ["common", "compiler", "orbit", "parser", "resolver", "stdlib", "vm"]
+members = ["common", "compiler", "loader", "orbit", "parser", "resolver", "stdlib", "vm"]
 resolver = "3"
 
 [workspace.package]
@@ -15,10 +15,12 @@ repository = "https://github.com/lukad/orbit"
 version = "0.1.0"
 
 [workspace.dependencies]
+ariadne = { version = "0.6", features = ["auto-color"] }
 thiserror = "2"
 tracing = { version = "0.1" }
 orbit-common = { path = "./common" }
 orbit-compiler = { path = "./compiler" }
+orbit-loader = { path = "./loader" }
 orbit-parser = { path = "./parser" }
 orbit-resolver = { path = "./resolver" }
 orbit-stdlib = { path = "./stdlib" }
