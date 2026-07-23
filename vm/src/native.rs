@@ -148,6 +148,7 @@ pub(crate) trait NativeServices {
     fn create_table(&mut self, array_hint: usize, hash_hint: usize) -> VmResult<RawValue>;
     fn raw_get(&mut self, table: &RawValue, key: &RawValue) -> VmResult<RawValue>;
     fn raw_set(&mut self, table: &RawValue, key: RawValue, value: RawValue) -> VmResult<()>;
+    fn raw_len(&self, table: &RawValue) -> VmResult<i64>;
     fn get_metatable(&mut self, value: &RawValue) -> VmResult<Option<RawValue>>;
     fn set_metatable(&mut self, value: &RawValue, metatable: Option<&RawValue>) -> VmResult<()>;
     fn next(
@@ -289,6 +290,10 @@ impl<'context> NativeContext<'context> {
     ) -> VmResult<()> {
         self.services
             .raw_set(table.raw(), key.into_raw(), value.into_raw())
+    }
+
+    pub fn raw_len(&self, table: &LocalValue<'context>) -> VmResult<i64> {
+        self.services.raw_len(table.raw())
     }
 
     pub fn get_metatable(

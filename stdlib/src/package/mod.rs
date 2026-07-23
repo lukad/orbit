@@ -6,9 +6,9 @@ mod searchpath;
 
 use std::env;
 
-use orbit_vm::{LocalValue, LuaString, NativeContext, State, Table, Value, VmResult};
+use orbit_vm::{LocalValue, LuaString, NativeContext, State, Value, VmResult};
 
-use crate::error;
+use crate::{error, set_field};
 
 const DEFAULT_PATH: &[u8] = b"./?.lua;./?/init.lua";
 
@@ -52,13 +52,9 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
         state.create_native_function("package.searchpath", searchpath::callback, &[])?;
 
     set_field(state, &package, b"loaded", &Value::Table(loaded.clone()))?;
-
     set_field(state, &loaded, b"package", &Value::Table(package.clone()))?;
-
     set_field(state, &package, b"preload", &Value::Table(preload))?;
-
     set_field(state, &package, b"searchers", &Value::Table(searchers))?;
-
     set_field(state, &package, b"path", &Value::String(initial_path()))?;
 
     set_field(
@@ -131,8 +127,4 @@ pub(crate) fn check_string<'context>(
             Some(value.type_name()),
         )),
     }
-}
-
-fn set_field(state: &mut State, table: &Table, name: &[u8], value: &Value) -> VmResult<()> {
-    state.raw_set(table, &Value::String(LuaString::new(name)), value)
 }

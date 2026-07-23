@@ -284,6 +284,16 @@ impl NativeServices for ExecutionNativeServices<'_> {
             .map_err(VmError::from)
     }
 
+    fn raw_len(&self, table: &RawValue) -> VmResult<i64> {
+        let table = table.as_table().ok_or_else(|| {
+            VmError::from(VmErrorKind::InvalidLengthOperand {
+                kind: table.type_name(),
+            })
+        })?;
+
+        self.runtime.raw_len(table).map_err(VmError::from)
+    }
+
     fn get_metatable(&mut self, value: &RawValue) -> VmResult<Option<RawValue>> {
         self.runtime
             .metatable(value)
