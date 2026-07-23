@@ -40,3 +40,10 @@ pub(crate) fn failure(message: impl Into<Box<str>>) -> VmError {
     }
     .into()
 }
+
+pub(crate) fn assertion_failed() -> VmError {
+    VmErrorKind::NativeFunctionFailure {
+        message: "assertion failed!".into(),
+    }
+    .into()
+}

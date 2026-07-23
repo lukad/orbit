@@ -10,8 +10,13 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
         .ok_or_else(|| error::missing_value(FUNCTION_NAME, 1))?;
 
     if !value.is_truthy() {
-        todo!()
+        return Err(error::assertion_failed());
     }
 
-    Ok(context.return_values([]))
+    let mut args = Vec::with_capacity(context.argument_count());
+    for i in 0..context.argument_count() {
+        args.push(context.argument(i).unwrap());
+    }
+
+    Ok(context.return_values(args))
 }
