@@ -98,6 +98,13 @@ impl NativeAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComparisonOp {
+    Equal,
+    LessThan,
+    LessEqual,
+}
+
 #[derive(Debug)]
 pub(crate) enum NativeActionKind {
     Return {
@@ -124,6 +131,13 @@ pub(crate) enum NativeActionKind {
     },
     Yield {
         values: Box<[RawValue]>,
+        token: NativeToken,
+    },
+    Compare {
+        operation: ComparisonOp,
+        left: RawValue,
+        right: RawValue,
+        continuation: Box<[RawValue]>,
         token: NativeToken,
     },
 }
@@ -532,6 +546,28 @@ impl<'context> NativeContext<'context> {
 
     pub fn file_exists(&self, filename: impl AsRef<[u8]>) -> bool {
         self.services.file_exists(filename.as_ref())
+    }
+
+    pub fn compare_with_continuation<C>(
+        &self,
+        operation: ComparisonOp,
+        left: LocalValue<'context>,
+        right: LocalValue<'context>,
+        continuation: C,
+        token: NativeToken,
+    ) -> NativeAction
+    where
+        C: IntoIterator<Item = LocalValue<'context>>,
+    {
+        NativeAction {
+            kind: NativeActionKind::Compare {
+                operation,
+                left: left.into_raw(),
+                right: right.into_raw(),
+                continuation: collect_values(continuation),
+                token,
+            },
+        }
     }
 }
 

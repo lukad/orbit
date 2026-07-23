@@ -1,8 +1,9 @@
-use orbit_compiler::bytecode::Chunk;
+use orbit_compiler::bytecode::{BinaryOp, Chunk};
 
 use crate::{
     error::{VmError, VmErrorKind, VmResult},
-    native::{NativeActionKind, NativeContext, NativeServices, NativeToken},
+    execution::operators::ComparisonOutcome,
+    native::{ComparisonOp, NativeActionKind, NativeContext, NativeServices, NativeToken},
     value::{RawValue, Value},
 };
 
@@ -146,6 +147,46 @@ impl Execution<'_> {
                 self.stack.push(Activation::Native(activation));
 
                 Ok(NativeStep::Yield(values))
+            }
+            NativeActionKind::Compare {
+                operation,
+                left,
+                right,
+                continuation,
+                token,
+            } => {
+                let operation = match operation {
+                    ComparisonOp::Equal => BinaryOp::Equal,
+                    ComparisonOp::LessThan => BinaryOp::LessThan,
+                    ComparisonOp::LessEqual => BinaryOp::LessEqual,
+                };
+
+                match self.resolve_comparison(operation, left, right) {
+                    Ok(ComparisonOutcome::Value(result)) => self.resume_native_action(
+                        activation,
+                        continuation,
+                        token,
+                        vec![RawValue::Boolean(result)].into_boxed_slice(),
+                        NativeResultMode::Boolean,
+                    ),
+
+                    Ok(ComparisonOutcome::Invoke { callee, arguments }) => self
+                        .invoke_native_action(
+                            activation,
+                            callee,
+                            arguments,
+                            continuation,
+                            token,
+                            NativeResultMode::Boolean,
+                        ),
+
+                    Err(error) => self.fail_native_action(
+                        activation,
+                        continuation,
+                        token,
+                        VmError::from(error),
+                    ),
+                }
             }
         }
     }

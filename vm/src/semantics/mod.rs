@@ -54,7 +54,6 @@ pub(crate) fn binary(
         BinaryOp::ShiftRight => arithmetic::shift_right_value(left, right),
         BinaryOp::Concat => concat::concat(left, right),
         BinaryOp::Equal => Ok(RawValue::Boolean(comparison::equal(left, right))),
-        BinaryOp::NotEqual => Ok(RawValue::Boolean(!comparison::equal(left, right))),
         BinaryOp::LessThan => comparison::less_than(left, right).map(RawValue::Boolean),
         BinaryOp::LessEqual => comparison::less_equal(left, right).map(RawValue::Boolean),
         BinaryOp::GreaterThan => comparison::greater_than(left, right).map(RawValue::Boolean),

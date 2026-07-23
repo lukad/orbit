@@ -22,6 +22,7 @@ pub(crate) enum ResultTarget {
     GenericFor { start: usize, variables: usize },
     Index { destination: Register },
     Operator { destination: Register },
+    Comparison { destination: Register },
     NewIndex,
 }
 
@@ -38,6 +39,7 @@ pub(crate) enum ReturnTarget {
 pub(crate) enum NativeResultMode {
     All,
     First,
+    Boolean,
     None,
 }
 
@@ -47,6 +49,10 @@ impl NativeResultMode {
             Self::All => values,
             Self::First => {
                 vec![values.first().cloned().unwrap_or(RawValue::Nil)].into_boxed_slice()
+            }
+            Self::Boolean => {
+                let result = values.first().is_some_and(RawValue::is_truthy);
+                vec![RawValue::Boolean(result)].into_boxed_slice()
             }
             Self::None => Box::default(),
         }

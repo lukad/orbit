@@ -21,7 +21,7 @@ pub use error::{VmError, VmErrorKind, VmResult, VmTraceFrame};
 pub use handle::{Function, Table};
 pub use loading::{LoadError, LoadService, NoLoadService};
 pub use native::{
-    LocalValue, NativeAction, NativeCallback, NativeContext, NativeEvent, NativeToken,
+    ComparisonOp, LocalValue, NativeAction, NativeCallback, NativeContext, NativeEvent, NativeToken,
 };
 pub use state::{CallOutcome, State, SuspendedCall};
 pub use string::LuaString;

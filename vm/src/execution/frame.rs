@@ -513,6 +513,10 @@ impl CallFrame {
                 let value = values.first().cloned().unwrap_or(RawValue::Nil);
                 self.set_register(runtime, destination, value)
             }
+            ResultTarget::Comparison { destination } => {
+                let result = values.first().is_some_and(RawValue::is_truthy);
+                self.set_register(runtime, destination, RawValue::Boolean(result))
+            }
             ResultTarget::NewIndex => Ok(()),
         }
     }

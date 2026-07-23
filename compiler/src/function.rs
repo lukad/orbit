@@ -1880,52 +1880,51 @@ impl<'hir> FunctionCompiler<'hir> {
                 left,
                 operator,
                 right,
-            } => {
-                if let Some(operator) = bytecode_binary(operator) {
-                    let mark = self.registers.temporary_mark();
-                    let [left_register, right_register] =
-                        self.registers.reserve_temporary_array(span)?;
-
-                    self.emit_one(left, left_register)?;
-                    self.emit_one(right, right_register)?;
-
-                    self.emitter.emit(
-                        span,
-                        Instruction::Binary {
-                            op: operator,
-                            dst: dst.to_bytecode(span)?,
-                            left: left_register.to_bytecode(span)?,
-                            right: right_register.to_bytecode(span)?,
-                        },
-                    )?;
-
-                    self.registers.release_temporaries_to(mark);
-                } else {
+            } => match operator {
+                BinaryOperator::And => {
                     self.emit_one(left, dst)?;
                     let end = self.emitter.new_label();
 
-                    match operator {
-                        BinaryOperator::And => {
-                            self.emitter.jump_if_falsy(span, dst, end)?;
-                            self.emit_one(right, dst)?;
-                        }
-                        BinaryOperator::Or => {
-                            let right_label = self.emitter.new_label();
-
-                            self.emitter.jump_if_falsy(span, dst, right_label)?;
-                            self.emitter.jump(span, end)?;
-
-                            self.emitter.bind(right_label);
-                            self.emit_one(right, dst)?;
-                        }
-                        _ => {
-                            unreachable!("non-short-circuit operator has no bytecode opcode")
-                        }
-                    }
+                    self.emitter.jump_if_falsy(span, dst, end)?;
+                    self.emit_one(right, dst)?;
 
                     self.emitter.bind(end);
                 }
-            }
+                BinaryOperator::Or => {
+                    self.emit_one(left, dst)?;
+                    let end = self.emitter.new_label();
+                    let right_label = self.emitter.new_label();
+
+                    self.emitter.jump_if_falsy(span, dst, right_label)?;
+                    self.emitter.jump(span, end)?;
+
+                    self.emitter.bind(right_label);
+                    self.emit_one(right, dst)?;
+
+                    self.emitter.bind(end);
+                }
+                BinaryOperator::NotEqual => {
+                    self.emit_binary_instruction(span, dst, left, right, BytecodeBinaryOp::Equal)?;
+
+                    self.emitter.emit(
+                        span,
+                        Instruction::Unary {
+                            op: BytecodeUnaryOp::Not,
+                            dst: dst.to_bytecode(span)?,
+                            operand: dst.to_bytecode(span)?,
+                        },
+                    )?;
+                }
+                operator => {
+                    self.emit_binary_instruction(
+                        span,
+                        dst,
+                        left,
+                        right,
+                        bytecode_binary(operator),
+                    )?;
+                }
+            },
             SingleExpr::Index { table, key } => {
                 let mark = self.registers.temporary_mark();
                 let [table_register, key_register] =
@@ -1959,6 +1958,35 @@ impl<'hir> FunctionCompiler<'hir> {
                 self.emit_table_one(span, &fields, dst)?;
             }
         }
+
+        Ok(())
+    }
+
+    fn emit_binary_instruction(
+        &mut self,
+        span: Span,
+        dst: VReg,
+        source_left: ExprId,
+        source_right: ExprId,
+        op: BytecodeBinaryOp,
+    ) -> Result<(), CompileError> {
+        let mark = self.registers.temporary_mark();
+        let [left_register, right_register] = self.registers.reserve_temporary_array(span)?;
+
+        self.emit_one(source_left, left_register)?;
+        self.emit_one(source_right, right_register)?;
+
+        self.emitter.emit(
+            span,
+            Instruction::Binary {
+                op,
+                dst: dst.to_bytecode(span)?,
+                left: left_register.to_bytecode(span)?,
+                right: right_register.to_bytecode(span)?,
+            },
+        )?;
+
+        self.registers.release_temporaries_to(mark);
 
         Ok(())
     }
@@ -2585,8 +2613,8 @@ fn bytecode_unary(operator: UnaryOperator) -> BytecodeUnaryOp {
     }
 }
 
-fn bytecode_binary(operator: BinaryOperator) -> Option<BytecodeBinaryOp> {
-    Some(match operator {
+fn bytecode_binary(operator: BinaryOperator) -> BytecodeBinaryOp {
+    match operator {
         BinaryOperator::Add => BytecodeBinaryOp::Add,
         BinaryOperator::Subtract => BytecodeBinaryOp::Subtract,
         BinaryOperator::Multiply => BytecodeBinaryOp::Multiply,
@@ -2604,14 +2632,15 @@ fn bytecode_binary(operator: BinaryOperator) -> Option<BytecodeBinaryOp> {
         BinaryOperator::Concat => BytecodeBinaryOp::Concat,
 
         BinaryOperator::Equal => BytecodeBinaryOp::Equal,
-        BinaryOperator::NotEqual => BytecodeBinaryOp::NotEqual,
         BinaryOperator::LessThan => BytecodeBinaryOp::LessThan,
         BinaryOperator::LessEqual => BytecodeBinaryOp::LessEqual,
         BinaryOperator::GreaterThan => BytecodeBinaryOp::GreaterThan,
         BinaryOperator::GreaterEqual => BytecodeBinaryOp::GreaterEqual,
 
-        BinaryOperator::And | BinaryOperator::Or => return None,
-    })
+        BinaryOperator::And | BinaryOperator::Or | BinaryOperator::NotEqual => {
+            unreachable!("operator is lowered specially")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3009,7 +3038,6 @@ mod tests {
             (">>", BytecodeBinaryOp::ShiftRight),
             ("..", BytecodeBinaryOp::Concat),
             ("==", BytecodeBinaryOp::Equal),
-            ("~=", BytecodeBinaryOp::NotEqual),
             ("<", BytecodeBinaryOp::LessThan),
             ("<=", BytecodeBinaryOp::LessEqual),
             (">", BytecodeBinaryOp::GreaterThan),
@@ -3019,6 +3047,44 @@ mod tests {
         for (operator, expected) in cases {
             assert_binary_operator(operator, expected);
         }
+    }
+
+    #[test]
+    fn compiles_not_equal() {
+        let source = "return 1 ~= 2";
+        let chunk = compile_source(source);
+
+        assert_eq!(chunk.entry.max_registers, 3);
+
+        let [
+            Instruction::LoadSmallInt {
+                dst: Register(1),
+                value: 1,
+            },
+            Instruction::LoadSmallInt {
+                dst: Register(2),
+                value: 2,
+            },
+            Instruction::Binary {
+                op: BytecodeBinaryOp::Equal,
+                dst: Register(0),
+                left: Register(1),
+                right: Register(2),
+            },
+            Instruction::Unary {
+                op: BytecodeUnaryOp::Not,
+                dst: Register(0),
+                operand: Register(0),
+            },
+            Instruction::Return {
+                base: Register(0),
+                values: Count::Fixed(1),
+                ..
+            },
+        ] = chunk.entry.code.as_ref()
+        else {
+            panic!("unexpected bytecode for {source}: {:#?}", chunk.entry.code);
+        };
     }
 
     #[test]

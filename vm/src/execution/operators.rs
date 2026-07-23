@@ -4,6 +4,14 @@ use crate::{error::FaultResult, semantics, value::RawValue};
 
 use super::{Execution, FrameBoundary, ResultTarget};
 
+pub(crate) enum ComparisonOutcome {
+    Value(bool),
+    Invoke {
+        callee: RawValue,
+        arguments: Box<[RawValue]>,
+    },
+}
+
 impl Execution<'_> {
     pub(super) fn unary(
         &mut self,
@@ -27,7 +35,7 @@ impl Execution<'_> {
                 Ok(None)
             }
             Err(error) => {
-                let Some(name) = unary_metamethod(operation) else {
+                let Some(name) = unary_metamethod_name(operation) else {
                     return Err(error);
                 };
 
@@ -62,14 +70,37 @@ impl Execution<'_> {
         let left = self.read_register(left)?;
         let right = self.read_register(right)?;
 
+        if matches!(
+            operation,
+            BinaryOp::Equal
+                | BinaryOp::LessThan
+                | BinaryOp::LessEqual
+                | BinaryOp::GreaterThan
+                | BinaryOp::GreaterEqual
+        ) {
+            return match self.resolve_comparison(operation, left, right)? {
+                ComparisonOutcome::Value(result) => {
+                    self.write_register(destination, RawValue::Boolean(result))?;
+                    Ok(None)
+                }
+                ComparisonOutcome::Invoke { callee, arguments } => {
+                    Ok(Some(FrameBoundary::Invoke {
+                        callee,
+                        arguments,
+                        target: ResultTarget::Comparison { destination },
+                    }))
+                }
+            };
+        }
+
         match semantics::binary(operation, &left, &right) {
             Ok(result) => {
                 self.write_register(destination, result)?;
-
                 Ok(None)
             }
+
             Err(error) => {
-                let Some(name) = binary_metamethod(operation) else {
+                let Some(name) = binary_metamethod_name(operation) else {
                     return Err(error);
                 };
 
@@ -77,29 +108,106 @@ impl Execution<'_> {
                     return Err(error);
                 }
 
-                let mut metamethod = self.runtime.metamethod(&left, name)?;
-
-                if metamethod.is_nil() {
-                    metamethod = self.runtime.metamethod(&right, name)?;
-                }
-
-                if metamethod.is_nil() {
+                let Some(metamethod) = self.find_binary_metamethod(&left, &right, name)? else {
                     return Err(error);
-                }
-
-                let arguments = vec![left, right].into_boxed_slice();
+                };
 
                 Ok(Some(FrameBoundary::Invoke {
                     callee: metamethod,
-                    arguments,
+                    arguments: vec![left, right].into_boxed_slice(),
                     target: ResultTarget::Operator { destination },
                 }))
             }
         }
     }
+
+    pub(super) fn resolve_comparison(
+        &self,
+        operation: BinaryOp,
+        left: RawValue,
+        right: RawValue,
+    ) -> FaultResult<ComparisonOutcome> {
+        match operation {
+            BinaryOp::Equal => {
+                let result = semantics::binary(BinaryOp::Equal, &left, &right)?;
+                let RawValue::Boolean(equal) = result else {
+                    unreachable!("equality must produce a boolean");
+                };
+                if equal || !matches!((&left, &right), (RawValue::Table(_), RawValue::Table(_))) {
+                    return Ok(ComparisonOutcome::Value(equal));
+                }
+                let Some(callee) = self.find_binary_metamethod(&left, &right, b"__eq")? else {
+                    return Ok(ComparisonOutcome::Value(false));
+                };
+                Ok(ComparisonOutcome::Invoke {
+                    callee,
+                    arguments: vec![left, right].into_boxed_slice(),
+                })
+            }
+            BinaryOp::LessThan
+            | BinaryOp::LessEqual
+            | BinaryOp::GreaterThan
+            | BinaryOp::GreaterEqual => match semantics::binary(operation, &left, &right) {
+                Ok(RawValue::Boolean(result)) => Ok(ComparisonOutcome::Value(result)),
+                Ok(_) => unreachable!("ordering must produce a boolean"),
+                Err(error) => {
+                    let (name, reversed) = match operation {
+                        BinaryOp::LessThan => (b"__lt".as_slice(), false),
+                        BinaryOp::LessEqual => (b"__le".as_slice(), false),
+                        BinaryOp::GreaterThan => (b"__lt".as_slice(), true),
+                        BinaryOp::GreaterEqual => (b"__le".as_slice(), true),
+                        _ => unreachable!(),
+                    };
+
+                    let (comparison_left, comparison_right) = if reversed {
+                        (&right, &left)
+                    } else {
+                        (&left, &right)
+                    };
+
+                    let Some(callee) =
+                        self.find_binary_metamethod(comparison_left, comparison_right, name)?
+                    else {
+                        return Err(error);
+                    };
+
+                    let arguments = if reversed {
+                        vec![right, left].into_boxed_slice()
+                    } else {
+                        vec![left, right].into_boxed_slice()
+                    };
+
+                    Ok(ComparisonOutcome::Invoke { callee, arguments })
+                }
+            },
+            _ => unreachable!("not a comparison operation"),
+        }
+    }
+
+    /// Finds a binary metamethod for the given operation by first checking the left value, then the right value.
+    fn find_binary_metamethod(
+        &self,
+        left: &RawValue,
+        right: &RawValue,
+        name: &'static [u8],
+    ) -> FaultResult<Option<RawValue>> {
+        let metamethod = self.runtime.metamethod(left, name)?;
+
+        if !metamethod.is_nil() {
+            return Ok(Some(metamethod));
+        }
+
+        let metamethod = self.runtime.metamethod(right, name)?;
+
+        if !metamethod.is_nil() {
+            return Ok(Some(metamethod));
+        }
+
+        Ok(None)
+    }
 }
 
-fn unary_metamethod(operation: UnaryOp) -> Option<&'static [u8]> {
+fn unary_metamethod_name(operation: UnaryOp) -> Option<&'static [u8]> {
     match operation {
         UnaryOp::Negate => Some(b"__unm"),
         UnaryOp::BitwiseNot => Some(b"__bnot"),
@@ -107,7 +215,7 @@ fn unary_metamethod(operation: UnaryOp) -> Option<&'static [u8]> {
     }
 }
 
-fn binary_metamethod(operation: BinaryOp) -> Option<&'static [u8]> {
+fn binary_metamethod_name(operation: BinaryOp) -> Option<&'static [u8]> {
     match operation {
         BinaryOp::Add => Some(b"__add"),
         BinaryOp::Subtract => Some(b"__sub"),
@@ -121,13 +229,11 @@ fn binary_metamethod(operation: BinaryOp) -> Option<&'static [u8]> {
         BinaryOp::BitwiseXor => Some(b"__bxor"),
         BinaryOp::ShiftLeft => Some(b"__shl"),
         BinaryOp::ShiftRight => Some(b"__shr"),
-        BinaryOp::Concat
-        | BinaryOp::Equal
-        | BinaryOp::NotEqual
-        | BinaryOp::LessThan
-        | BinaryOp::LessEqual
-        | BinaryOp::GreaterThan
-        | BinaryOp::GreaterEqual => None,
+        BinaryOp::LessThan => Some(b"__lt"),
+        BinaryOp::LessEqual => Some(b"__le"),
+        BinaryOp::GreaterThan => Some(b"__lt"),
+        BinaryOp::GreaterEqual => Some(b"__le"),
+        BinaryOp::Concat | BinaryOp::Equal => None,
     }
 }
 
@@ -155,12 +261,10 @@ fn binary_primitive_applies(operation: BinaryOp, left: &RawValue, right: &RawVal
         | BinaryOp::ShiftLeft
         | BinaryOp::ShiftRight => left.to_integer().is_some() && right.to_integer().is_some(),
 
-        BinaryOp::Concat
-        | BinaryOp::Equal
-        | BinaryOp::NotEqual
-        | BinaryOp::LessThan
+        BinaryOp::LessThan
         | BinaryOp::LessEqual
         | BinaryOp::GreaterThan
-        | BinaryOp::GreaterEqual => true,
+        | BinaryOp::GreaterEqual => false,
+        BinaryOp::Concat | BinaryOp::Equal => true,
     }
 }

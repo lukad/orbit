@@ -902,6 +902,26 @@ fn invalid_binary_operands_return_typed_errors() {
             right: "boolean"
         }
     ));
+
+    let error = execute_source("return 1 > false").unwrap_err();
+    assert!(matches!(
+        error.kind,
+        VmErrorKind::InvalidComparisonOperands {
+            operation: ">",
+            left: "number",
+            right: "boolean"
+        }
+    ));
+
+    let error = execute_source("return false >= 1").unwrap_err();
+    assert!(matches!(
+        error.kind,
+        VmErrorKind::InvalidComparisonOperands {
+            operation: ">=",
+            left: "boolean",
+            right: "number"
+        }
+    ));
 }
 
 #[test]
@@ -2781,4 +2801,110 @@ fn missing_arithmetic_metamethods_preserve_the_existing_operand_errors() {
         bitwise_error.kind,
         VmErrorKind::InvalidBitwiseOperands { .. }
     ));
+}
+
+#[test]
+fn comparison_metamethods_follow_lua_semantics() {
+    let mut state = State::new(NoLoadService).unwrap();
+    let a = state.create_table(0, 0).unwrap();
+    let b = state.create_table(0, 0).unwrap();
+
+    state.set_global(b"a", &Value::Table(a.clone())).unwrap();
+    state.set_global(b"b", &Value::Table(b.clone())).unwrap();
+
+    let values = execute_in_state(
+        &mut state,
+        SourceId::new(71),
+        r#"
+            calls = {}
+
+            return {
+                __lt = function(left, right)
+                    calls[#calls + 1] = {
+                        name = "__lt",
+                        left = left,
+                        right = right,
+                    }
+
+                    return "truthy"
+                end,
+
+                __le = function(left, right)
+                    calls[#calls + 1] = {
+                        name = "__le",
+                        left = left,
+                        right = right,
+                    }
+
+                    return 123
+                end,
+
+                __eq = function(left, right)
+                    calls[#calls + 1] = {
+                        name = "__eq",
+                        left = left,
+                        right = right,
+                    }
+
+                    return {}
+                end,
+            }
+        "#,
+    )
+    .unwrap();
+
+    let [Value::Table(metatable)] = values.as_slice() else {
+        panic!("metatable factory should return one table");
+    };
+
+    let metatable = metatable.clone();
+
+    state
+        .set_metatable(&Value::Table(a), Some(&metatable))
+        .unwrap();
+
+    state
+        .set_metatable(&Value::Table(b), Some(&metatable))
+        .unwrap();
+
+    let actual = execute_in_state(
+        &mut state,
+        SourceId::new(72),
+        r#"
+            local lt = a < b
+            local gt = b > a
+            local le = a <= b
+            local ge = b >= a
+            local eq = a == b
+            local ne = a ~= b
+            local same = a == a
+
+            return
+                lt, gt, le, ge, eq, ne, same,
+                #calls,
+                calls[1].left == a and calls[1].right == b,
+                calls[2].left == a and calls[2].right == b,
+                calls[3].left == a and calls[3].right == b,
+                calls[4].left == a and calls[4].right == b
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        actual,
+        vec![
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(false),
+            Value::Boolean(true),
+            Value::Integer(6),
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+        ]
+    );
 }
