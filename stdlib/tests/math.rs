@@ -22,7 +22,7 @@ fn execute(state: &mut State, source: &str) -> VmResult<Vec<Value>> {
 }
 
 #[test]
-fn install_registers_math_max() {
+fn install_registers_math_extrema() {
     let mut state = installed_state();
 
     let Value::Table(math) = state.get_global(b"math").unwrap() else {
@@ -33,10 +33,14 @@ fn install_registers_math_max() {
         state.raw_get(&math, &string("max")).unwrap(),
         Value::Function(_)
     ));
+    assert!(matches!(
+        state.raw_get(&math, &string("min")).unwrap(),
+        Value::Function(_)
+    ));
 }
 
 #[test]
-fn max_returns_the_largest_primitive_value_and_preserves_its_type() {
+fn extrema_return_primitive_values_and_preserve_their_types() {
     let mut state = installed_state();
 
     let values = execute(
@@ -46,7 +50,11 @@ fn max_returns_the_largest_primitive_value_and_preserves_its_type() {
                 math.max(7),
                 math.max(-5, 2, 1),
                 math.max(1.5, 2, 1.75),
-                math.max("alpha", "omega", "beta")
+                math.max("alpha", "omega", "beta"),
+                math.min(7),
+                math.min(-5, 2, 1),
+                math.min(1.5, 2, 1.75),
+                math.min("alpha", "omega", "beta")
         "#,
     )
     .unwrap();
@@ -58,6 +66,10 @@ fn max_returns_the_largest_primitive_value_and_preserves_its_type() {
             Value::Integer(2),
             Value::Integer(2),
             string("omega"),
+            Value::Integer(7),
+            Value::Integer(-5),
+            Value::Float(1.5),
+            string("alpha"),
         ]
     );
 }
@@ -134,7 +146,51 @@ fn max_uses_the_right_lt_metamethod_and_booleanizes_its_result() {
 }
 
 #[test]
-fn max_reports_missing_and_incomparable_arguments() {
+fn min_dispatches_to_lt_with_the_candidate_first_and_keeps_the_first_tie() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local calls = {}
+            local metatable = {
+                __lt = function(left, right)
+                    calls[#calls + 1] = { left = left, right = right }
+                    return left.rank < right.rank
+                end,
+            }
+
+            local first = setmetatable({ rank = 3 }, metatable)
+            local smallest = setmetatable({ rank = 1 }, metatable)
+            local last = setmetatable({ rank = 2 }, metatable)
+            local tied = setmetatable({ rank = 1 }, metatable)
+
+            local minimum = math.min(first, smallest, last, tied)
+
+            return
+                minimum == smallest,
+                #calls,
+                calls[1].left == smallest and calls[1].right == first,
+                calls[2].left == last and calls[2].right == smallest,
+                calls[3].left == tied and calls[3].right == smallest
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Boolean(true),
+            Value::Integer(3),
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+        ]
+    );
+}
+
+#[test]
+fn extrema_report_missing_and_incomparable_arguments() {
     let mut state = installed_state();
 
     let missing = execute(&mut state, "return math.max()").unwrap_err();
@@ -160,5 +216,30 @@ fn max_reports_missing_and_incomparable_arguments() {
     ));
     assert!(incomparable.frames.iter().any(
         |frame| matches!(frame, VmTraceFrame::Native { name } if name.as_ref() == "math.max")
+    ));
+
+    let missing = execute(&mut state, "return math.min()").unwrap_err();
+    assert_eq!(
+        missing.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #1 to 'min' (value expected)".into(),
+        }
+    );
+    assert!(matches!(
+        missing.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "math.min"
+    ));
+
+    let incomparable = execute(&mut state, "return math.min(1, false)").unwrap_err();
+    assert!(matches!(
+        incomparable.kind,
+        VmErrorKind::InvalidComparisonOperands {
+            operation: "<",
+            left: "boolean",
+            right: "number",
+        }
+    ));
+    assert!(incomparable.frames.iter().any(
+        |frame| matches!(frame, VmTraceFrame::Native { name } if name.as_ref() == "math.min")
     ));
 }
