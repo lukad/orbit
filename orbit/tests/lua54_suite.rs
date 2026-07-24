@@ -25,13 +25,7 @@ use orbit_common::SourceId;
 use orbit_loader::Loader;
 use orbit_vm::{LoadService, LoadSource};
 
-const KNOWN_COMPILE_FAILURES: &[&str] = &[
-    "literals.lua",
-    "math.lua",
-    "strings.lua",
-    "tpack.lua",
-    "utf8.lua",
-];
+const KNOWN_COMPILE_FAILURES: &[&str] = &["literals.lua", "math.lua", "strings.lua", "utf8.lua"];
 
 const INDIVIDUAL_RUNNER_PRELUDE: &str = r#"
 _U = true

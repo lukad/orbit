@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
 
+use orbit_common::number::parse_lua_number;
+
 use crate::{
     error::{VmError, VmResult},
     format::format_lua_float,
@@ -65,7 +67,18 @@ impl<'context> LocalValue<'context> {
     }
 
     pub fn to_integer(&self) -> Option<i64> {
-        self.raw.to_integer()
+        match &self.raw {
+            RawValue::String(value) => parse_lua_number(value.as_bytes())?.to_integer(),
+            _ => self.raw.to_integer(),
+        }
+    }
+
+    pub fn is_number(&self) -> bool {
+        match &self.raw {
+            RawValue::Integer(_) | RawValue::Float(_) => true,
+            RawValue::String(value) => parse_lua_number(value.as_bytes()).is_some(),
+            _ => false,
+        }
     }
 
     pub fn as_float(&self) -> Option<f64> {

@@ -1,6 +1,6 @@
 use orbit_vm::{NativeAction, NativeContext, VmResult};
 
-use crate::error;
+use crate::{argument, error};
 
 const FUNCTION_NAME: &str = "ipairs";
 const ITERATOR_NAME: &str = "ipairs iterator";
@@ -24,17 +24,11 @@ pub(crate) fn iterator(context: &mut NativeContext<'_>) -> VmResult<NativeAction
         .argument(0)
         .ok_or_else(|| error::missing_value(ITERATOR_NAME, 1))?;
 
-    let control = context
-        .argument(1)
-        .ok_or_else(|| error::type_error(ITERATOR_NAME, 2, "number", None))?;
-
-    let Some(control) = control.to_integer() else {
-        return Err(error::type_error(
-            ITERATOR_NAME,
-            2,
-            "number",
-            Some(control.type_name()),
-        ));
+    let control = match context.argument(1) {
+        Some(value) => argument::check_integer(&value, FUNCTION_NAME, 2)?,
+        None => {
+            return Err(error::type_error(FUNCTION_NAME, 2, "number", None));
+        }
     };
 
     let index = control.wrapping_add(1);

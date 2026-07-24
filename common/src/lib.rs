@@ -1,3 +1,5 @@
+pub mod number;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SourceId(u32);
 

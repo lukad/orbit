@@ -1,6 +1,6 @@
 use orbit_vm::{NativeAction, NativeContext, VmResult};
 
-use crate::error;
+use crate::{argument, error};
 
 const FUNCTION_NAME: &str = "select";
 
@@ -16,23 +16,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
         return Ok(context.return_values([num_extra_args]));
     }
 
-    let offset = match value.to_integer() {
-        Some(offset) => offset,
-        None if value.type_name() == "number" => {
-            return Err(error::number_has_no_integer_representation(
-                FUNCTION_NAME,
-                1,
-            ));
-        }
-        None => {
-            return Err(error::type_error(
-                FUNCTION_NAME,
-                1,
-                "number",
-                Some(value.type_name()),
-            ));
-        }
-    };
+    let offset = argument::check_integer(&value, FUNCTION_NAME, 1)?;
 
     if offset == 0 {
         return Err(error::index_out_of_range(FUNCTION_NAME, 1));

@@ -1,7 +1,10 @@
 use std::iter::FusedIterator;
 
 use logos::{Lexer as LogosLexer, Logos};
-use orbit_common::{SourceId, Span, Spanned};
+use orbit_common::{
+    SourceId, Span, Spanned,
+    number::{ParsedNumber, parse_lua_number},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Symbol(Box<str>);
@@ -328,59 +331,21 @@ pub fn lex(source_id: SourceId, source: &str) -> LexResult<Vec<Spanned<Token>>> 
 }
 
 fn lex_integer(lexer: &mut LogosLexer<'_, Token>) -> Result<i64, LexErrorKind> {
-    let literal = lexer.slice();
-
-    if let Some(digits) = literal
-        .strip_prefix("0x")
-        .or_else(|| literal.strip_prefix("0X"))
-    {
-        u64::from_str_radix(digits, 16)
-            .map(|value| value as i64)
-            .map_err(|_| LexErrorKind::InvalidNumber)
-    } else {
-        literal.parse().map_err(|_| LexErrorKind::InvalidNumber)
+    match parse_lua_number(lexer.slice().as_bytes()) {
+        Some(ParsedNumber::Integer(value)) => Ok(value),
+        _ => Err(LexErrorKind::InvalidNumber),
     }
 }
 
 fn lex_decimal_float(lexer: &mut LogosLexer<'_, Token>) -> Result<f64, LexErrorKind> {
-    lexer
-        .slice()
-        .parse()
-        .map_err(|_| LexErrorKind::InvalidNumber)
+    match parse_lua_number(lexer.slice().as_bytes()) {
+        Some(ParsedNumber::Float(value)) => Ok(value),
+        _ => Err(LexErrorKind::InvalidNumber),
+    }
 }
 
 fn lex_hex_float(lexer: &mut LogosLexer<'_, Token>) -> Result<f64, LexErrorKind> {
-    parse_hex_float(lexer.slice())
-}
-
-fn parse_hex_float(literal: &str) -> Result<f64, LexErrorKind> {
-    let literal = &literal[2..];
-    let (significand, exponent) = literal
-        .split_once(['p', 'P'])
-        .map_or((literal, "0"), |parts| parts);
-    let exponent = exponent
-        .parse::<i32>()
-        .map_err(|_| LexErrorKind::InvalidNumber)?;
-    let mut value = 0.0;
-    let mut fractional = false;
-    let mut place = 1.0 / 16.0;
-
-    for byte in significand.bytes() {
-        if byte == b'.' {
-            fractional = true;
-            continue;
-        }
-
-        let digit = hex_value(byte).ok_or(LexErrorKind::InvalidNumber)? as f64;
-        if fractional {
-            value += digit * place;
-            place /= 16.0;
-        } else {
-            value = value * 16.0 + digit;
-        }
-    }
-
-    Ok(value * 2.0_f64.powi(exponent))
+    lex_decimal_float(lexer)
 }
 
 fn lex_short_string(lexer: &mut LogosLexer<'_, Token>) -> Result<ByteString, LexErrorKind> {

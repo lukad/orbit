@@ -1,6 +1,6 @@
-use orbit_vm::{LocalValue, NativeAction, NativeContext, VmResult};
+use orbit_vm::{NativeAction, NativeContext, VmResult};
 
-use crate::error;
+use crate::{argument, error};
 
 const FUNCTION_NAME: &str = "unpack";
 const MAX_UNPACK_RESULTS: usize = 1_000_000;
@@ -14,7 +14,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
     let end = match context.argument(2) {
         None => context.raw_len(&table)?,
         Some(value) if value.is_nil() => context.raw_len(&table)?,
-        Some(value) => check_integer(&value, 3)?,
+        Some(value) => argument::check_integer(&value, FUNCTION_NAME, 3)?,
     };
 
     if start > end {
@@ -50,22 +50,6 @@ fn optional_integer(context: &NativeContext<'_>, index: usize, default: i64) -> 
     match context.argument(index) {
         None => Ok(default),
         Some(value) if value.is_nil() => Ok(default),
-        Some(value) => check_integer(&value, index + 1),
-    }
-}
-
-fn check_integer(value: &LocalValue<'_>, argument: usize) -> VmResult<i64> {
-    match value.to_integer() {
-        Some(value) => Ok(value),
-        None if value.type_name() == "number" => Err(error::number_has_no_integer_representation(
-            FUNCTION_NAME,
-            argument,
-        )),
-        None => Err(error::type_error(
-            FUNCTION_NAME,
-            argument,
-            "number",
-            Some(value.type_name()),
-        )),
+        Some(value) => argument::check_integer(&value, FUNCTION_NAME, index + 1),
     }
 }
