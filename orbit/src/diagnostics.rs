@@ -111,8 +111,12 @@ fn escape_invalid_utf8(source: &[u8]) -> (String, Box<[usize]>) {
 
 pub(crate) fn print_runtime_error(error: &VmError, sources: &SourceMap) {
     match &error.kind {
-        VmErrorKind::LoadFailure(error) => print_load_error(error, sources),
-        kind => {
+        VmErrorKind::LoadFailure(load_error) => {
+            print_load_error(load_error, sources);
+        }
+        _ => {
+            let message = error.message();
+
             let span = error.frames.iter().find_map(|frame| match frame {
                 VmTraceFrame::Lua {
                     function_span,
@@ -122,8 +126,8 @@ pub(crate) fn print_runtime_error(error: &VmError, sources: &SourceMap) {
                 VmTraceFrame::Native { .. } => None,
             });
 
-            if span.is_none_or(|span| !print_diagnostic(span, kind, sources)) {
-                eprintln!("{kind}");
+            if span.is_none_or(|span| !print_diagnostic(span, &message, sources)) {
+                eprintln!("{message}");
             }
         }
     }

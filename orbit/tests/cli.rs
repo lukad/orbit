@@ -155,6 +155,28 @@ fn runtime_errors_fail_and_include_a_source_diagnostic() {
 }
 
 #[test]
+fn explicit_errors_report_string_and_non_string_objects() {
+    for (source, expected) in [
+        ("error(\"this is a test\", 0)\n", "this is a test"),
+        ("error({}, 0)\n", "(error object is a table value)"),
+    ] {
+        let script = Script::new(source);
+        let output = Command::new(env!("CARGO_BIN_EXE_orbit"))
+            .arg(&script.0)
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(stderr.contains("in function 'error'"), "{stderr}");
+        assert!(!stderr.contains("Error: Lua error"), "{stderr}");
+    }
+}
+
+#[test]
 fn syntax_errors_fail_and_include_a_source_diagnostic() {
     let script = Script::new("return )\n");
     let output = Command::new(env!("CARGO_BIN_EXE_orbit"))

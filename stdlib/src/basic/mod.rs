@@ -2,6 +2,7 @@ use orbit_vm::{LuaString, State, Value, VmResult};
 
 mod assert;
 mod dofile;
+mod error;
 mod getmetatable;
 mod ipairs;
 mod load;
@@ -71,6 +72,9 @@ pub fn install(state: &mut State) -> VmResult<()> {
 
     let tonumber = state.create_native_function("tonumber", tonumber::callback, &[])?;
     state.set_global(b"tonumber", &Value::Function(tonumber))?;
+
+    let error = state.create_native_function(error::FUNCTION, error::callback, &[])?;
+    state.set_global(error::FUNCTION, &Value::Function(error))?;
 
     Ok(())
 }

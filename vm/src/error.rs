@@ -1,6 +1,8 @@
+use std::borrow::Cow;
+
 use orbit_common::Span;
 
-use crate::loading::LoadError;
+use crate::{Value, loading::LoadError};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VmErrorKind {
@@ -154,6 +156,8 @@ pub enum VmErrorKind {
     InvalidNativeContinuation { message: &'static str },
     #[error(transparent)]
     LoadFailure(LoadError),
+    #[error("Lua error")]
+    Raised,
 }
 
 impl From<LoadError> for VmErrorKind {
@@ -197,10 +201,12 @@ pub enum VmTraceFrame {
 }
 
 /// A runtime failure together with the Lua/native frames active when it occurred.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VmError {
     pub kind: VmErrorKind,
     pub frames: Box<[VmTraceFrame]>,
+    object: Option<Value>,
+    level: i64,
 }
 
 impl VmError {
@@ -208,17 +214,49 @@ impl VmError {
         Self {
             kind,
             frames: Box::new([]),
+            object: None,
+            level: 0,
+        }
+    }
+
+    pub fn raised(object: Value, level: i64) -> Self {
+        Self {
+            kind: VmErrorKind::Raised,
+            frames: Box::new([]),
+            object: Some(object),
+            level,
         }
     }
 
     pub(crate) fn with_frames(kind: VmErrorKind, frames: Box<[VmTraceFrame]>) -> Self {
-        Self { kind, frames }
+        Self {
+            kind,
+            frames,
+            object: None,
+            level: 0,
+        }
     }
 
     pub(crate) fn append_frames(&mut self, frames: impl IntoIterator<Item = VmTraceFrame>) {
         let mut combined = Vec::from(std::mem::take(&mut self.frames));
         combined.extend(frames);
         self.frames = combined.into_boxed_slice();
+    }
+
+    pub fn object(&self) -> Option<&Value> {
+        self.object.as_ref()
+    }
+
+    pub fn message(&self) -> Cow<'_, str> {
+        match (&self.kind, self.object.as_ref().unwrap_or(&Value::Nil)) {
+            (VmErrorKind::Raised, Value::String(message)) => {
+                String::from_utf8_lossy(message.as_bytes())
+            }
+            (VmErrorKind::Raised, object) => {
+                Cow::Owned(format!("(error object is a {} value)", object.type_name()))
+            }
+            (kind, _) => Cow::Owned(kind.to_string()),
+        }
     }
 }
 

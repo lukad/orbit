@@ -19,13 +19,20 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
             Ok(context.return_values(results))
         }
         NativeEvent::ResumeError { token: CALL } => {
-            let failure = context
-                .resume_error()
-                .expect("ResumeError must contain an error");
-            Ok(context.return_values([
-                context.boolean(false),
-                context.string(failure.kind.to_string()),
-            ]))
+            let (object, fallback) = {
+                let failure = context
+                    .resume_error()
+                    .expect("ResumeError must contain an error");
+
+                (failure.object().cloned(), failure.kind.to_string())
+            };
+
+            let object = match object {
+                Some(object) => context.import(object)?,
+                None => context.string(fallback),
+            };
+
+            Ok(context.return_values([context.boolean(false), object]))
         }
         NativeEvent::Resume { token } | NativeEvent::ResumeError { token } => Err(error::failure(
             format!("invalid continuation token {} in 'pcall'", token.get()),
