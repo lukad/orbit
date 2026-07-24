@@ -15,5 +15,8 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
     let min = state.create_native_function("math.min", min::callback, &[])?;
     set_field(state, &math, b"min", &Value::Function(min))?;
 
+    set_field(state, &math, b"mininteger", &Value::Integer(i64::MIN))?;
+    set_field(state, &math, b"maxinteger", &Value::Integer(i64::MAX))?;
+
     state.set_global(b"math", &Value::Table(math))
 }
