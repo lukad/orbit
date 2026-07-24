@@ -10,7 +10,7 @@ use rustyline::{
     validate::Validator,
 };
 
-use super::indent::AutoDedent;
+use super::{history::ALIGNMENT_MARKER, indent::AutoDedent};
 
 const KEYWORDS: &[&str] = &[
     "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
@@ -118,6 +118,7 @@ impl Highlighter for ReplHelper {
     }
 
     fn highlight_hint<'hint>(&self, hint: &'hint str) -> Cow<'hint, str> {
+        let hint = hint.replace(ALIGNMENT_MARKER, "");
         Cow::Owned(format!("\x1b[2;90m{hint}\x1b[0m"))
     }
 
@@ -314,6 +315,10 @@ fn render_styles(source: &str, styles: &[Style], start: usize) -> String {
     let mut active = Style::Plain;
 
     for (offset, character) in source[start..].char_indices() {
+        if character == ALIGNMENT_MARKER {
+            continue;
+        }
+
         let style = styles[start + offset];
         if style != active {
             if active != Style::Plain {
@@ -338,7 +343,7 @@ mod tests {
         Context, completion::Completer, highlight::Highlighter, history::DefaultHistory,
     };
 
-    use super::{AutoDedent, ReplHelper, highlight_lua};
+    use super::{ALIGNMENT_MARKER, AutoDedent, ReplHelper, highlight_lua};
 
     #[test]
     fn highlights_lua_tokens_and_preserves_the_text() {
@@ -360,6 +365,22 @@ mod tests {
         let highlighted = helper.highlight("second]]", 0);
 
         assert_eq!(highlighted, "\x1b[32msecond]]\x1b[0m");
+    }
+
+    #[test]
+    fn hides_history_alignment_markers() {
+        let source =
+            format!("function value()\n  {ALIGNMENT_MARKER}  return 1\n  {ALIGNMENT_MARKER}end");
+        let highlighted = highlight_lua(&source);
+
+        assert_eq!(
+            strip_ansi(&highlighted),
+            "function value()\n    return 1\n  end"
+        );
+
+        let helper = ReplHelper::new(AutoDedent::default());
+        let hint = helper.highlight_hint(&source);
+        assert_eq!(strip_ansi(&hint), "function value()\n    return 1\n  end");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod helper;
+mod history;
 mod indent;
 
 use std::{
@@ -13,15 +14,16 @@ use orbit_parser::{
     parser::ParseErrorKind,
 };
 use orbit_vm::{CallOutcome, Function, LoadError, State, Table, Value, VmError, VmErrorKind};
-use rustyline::{CompletionType, Config, Editor, error::ReadlineError, history::DefaultHistory};
+use rustyline::{CompletionType, Config, Editor, error::ReadlineError};
 
 use self::helper::ReplHelper;
+use self::history::{ReplHistory, decode_entry};
 use self::indent::{
     AutoDedent, configure_auto_dedent, normalize_closing_line, suggested_indentation,
 };
 use crate::diagnostics::{SharedSources, print_runtime_error};
 
-type ReplEditor = Editor<ReplHelper, DefaultHistory>;
+type ReplEditor = Editor<ReplHelper, ReplHistory>;
 
 const REPL_NAME: &[u8] = b"<stdin>";
 const PRIMARY_PROMPT: &str = "$ ";
@@ -32,7 +34,8 @@ pub(crate) fn run(state: &mut State, sources: &SharedSources) -> ExitCode {
         .completion_type(CompletionType::List)
         .history_ignore_space(true)
         .build();
-    let mut editor = match ReplEditor::with_config(config) {
+    let history = ReplHistory::with_config(&config);
+    let mut editor = match ReplEditor::with_history(config, history) {
         Ok(editor) => editor,
         Err(error) => {
             eprintln!("failed to initialize line editor: {error}");
@@ -94,6 +97,7 @@ pub(crate) fn run(state: &mut State, sources: &SharedSources) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+        let line = decode_entry(line);
         let line = normalize_closing_line(line, indentation.len());
 
         let first_line = source.is_empty();
