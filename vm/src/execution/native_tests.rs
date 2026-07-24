@@ -32,7 +32,7 @@ fn compile_source(source: &str) -> Chunk {
 }
 
 fn execution<'runtime>(runtime: &'runtime mut Runtime, source: &str) -> Execution<'runtime> {
-    let function = runtime.load_raw(compile_source(source)).unwrap();
+    let function = runtime.load_chunk_raw(compile_source(source)).unwrap();
 
     let function = runtime.function_snapshot(function).unwrap();
 

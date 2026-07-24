@@ -92,6 +92,19 @@ impl LoadError {
     }
 }
 
+/// Source input accepted by a dynamic [`LoadService`].
+#[derive(Debug, Clone, Copy)]
+pub enum LoadSource<'source> {
+    Buffer {
+        name: &'source [u8],
+        source: &'source [u8],
+    },
+    File {
+        filename: &'source [u8],
+    },
+    Stdin,
+}
+
 /// Host-provided dynamic source compiler and filesystem capability.
 ///
 /// The VM assigns `source_id` before asking the service to compile. The
@@ -100,16 +113,7 @@ impl LoadError {
 /// filename or source text; embedders that need rendered diagnostics should
 /// maintain their own source-ID mapping.
 pub trait LoadService {
-    fn compile_buffer(
-        &mut self,
-        source_id: SourceId,
-        name: &[u8],
-        source: &[u8],
-    ) -> Result<Chunk, LoadError>;
-
-    fn compile_file(&mut self, source_id: SourceId, filename: &[u8]) -> Result<Chunk, LoadError>;
-
-    fn compile_stdin(&mut self, source_id: SourceId) -> Result<Chunk, LoadError>;
+    fn compile(&mut self, source_id: SourceId, source: LoadSource<'_>) -> Result<Chunk, LoadError>;
 
     fn file_exists(&self, filename: &[u8]) -> bool;
 }
@@ -118,20 +122,11 @@ pub trait LoadService {
 pub struct NoLoadService;
 
 impl LoadService for NoLoadService {
-    fn compile_buffer(
+    fn compile(
         &mut self,
         source_id: SourceId,
-        _name: &[u8],
-        _source: &[u8],
+        _source: LoadSource<'_>,
     ) -> Result<Chunk, LoadError> {
-        Err(LoadError::DynamicLoadingDisabled { source_id })
-    }
-
-    fn compile_file(&mut self, source_id: SourceId, _filename: &[u8]) -> Result<Chunk, LoadError> {
-        Err(LoadError::DynamicLoadingDisabled { source_id })
-    }
-
-    fn compile_stdin(&mut self, source_id: SourceId) -> Result<Chunk, LoadError> {
         Err(LoadError::DynamicLoadingDisabled { source_id })
     }
 

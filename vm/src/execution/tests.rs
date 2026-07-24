@@ -23,7 +23,9 @@ fn run_source(source: &str) -> VmResult<Box<[RawValue]>> {
     let chunk = compile_source(source);
     let mut runtime = Runtime::new(Box::new(NoLoadService)).map_err(crate::VmError::from)?;
 
-    let function = runtime.load_raw(chunk).map_err(crate::VmError::from)?;
+    let function = runtime
+        .load_chunk_raw(chunk)
+        .map_err(crate::VmError::from)?;
 
     let function = runtime
         .function_snapshot(function)

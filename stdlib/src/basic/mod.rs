@@ -4,6 +4,7 @@ mod assert;
 mod dofile;
 mod getmetatable;
 mod ipairs;
+mod load;
 mod next;
 mod pairs;
 mod print;
@@ -42,6 +43,9 @@ pub fn install(state: &mut State) -> VmResult<()> {
 
     let pairs = state.create_native_function("pairs", pairs::callback, &[Value::Function(next)])?;
     state.set_global(b"pairs", &Value::Function(pairs))?;
+
+    let load = state.create_native_function("load", load::callback, &[])?;
+    state.set_global(b"load", &Value::Function(load))?;
 
     let ipairs_iterator = state.create_native_function("ipairs iterator", ipairs::iterator, &[])?;
     let ipairs = state.create_native_function(

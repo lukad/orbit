@@ -37,10 +37,10 @@ impl State {
         Ok(Self { runtime })
     }
 
-    pub fn load(&mut self, chunk: Chunk) -> VmResult<Function> {
+    pub fn load_chunk(&mut self, chunk: Chunk) -> VmResult<Function> {
         self.collect_if_due()?;
 
-        let function_id = self.runtime.load_raw(chunk)?;
+        let function_id = self.runtime.load_chunk_raw(chunk)?;
         let function = self.runtime.export_function(function_id)?;
 
         Ok(function)
@@ -51,28 +51,16 @@ impl State {
         name: impl AsRef<[u8]>,
         source: impl AsRef<[u8]>,
     ) -> VmResult<Function> {
-        self.collect_if_due()?;
-
-        let function_id = self
-            .runtime
-            .load_buffer_raw(name.as_ref(), source.as_ref())?;
-
-        let function = self.runtime.export_function(function_id)?;
-        Ok(function)
+        self.load_source(crate::LoadSource::Buffer {
+            name: name.as_ref(),
+            source: source.as_ref(),
+        })
     }
 
-    pub fn load_file(&mut self, filename: impl AsRef<[u8]>) -> VmResult<Function> {
+    pub fn load_source(&mut self, source: crate::LoadSource<'_>) -> VmResult<Function> {
         self.collect_if_due()?;
 
-        let function_id = self.runtime.load_file_raw(filename.as_ref())?;
-        let function = self.runtime.export_function(function_id)?;
-        Ok(function)
-    }
-
-    pub fn load_stdin(&mut self) -> VmResult<Function> {
-        self.collect_if_due()?;
-
-        let function_id = self.runtime.load_stdin_raw()?;
+        let function_id = self.runtime.load_source_raw(source, None)?;
         let function = self.runtime.export_function(function_id)?;
         Ok(function)
     }

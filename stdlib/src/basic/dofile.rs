@@ -1,4 +1,4 @@
-use orbit_vm::{NativeAction, NativeContext, NativeEvent, NativeToken, VmResult};
+use orbit_vm::{LoadSource, NativeAction, NativeContext, NativeEvent, NativeToken, VmResult};
 
 use crate::error;
 
@@ -24,8 +24,8 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
 
 fn start(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let chunk = match context.argument(0) {
-        None => context.load_stdin()?,
-        Some(filename) if filename.is_nil() => context.load_stdin()?,
+        None => context.load_source(LoadSource::Stdin, None)?,
+        Some(filename) if filename.is_nil() => context.load_source(LoadSource::Stdin, None)?,
         Some(filename) => {
             let filename = match filename.type_name() {
                 "string" => filename,
@@ -46,7 +46,7 @@ fn start(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
                 .as_bytes()
                 .to_vec();
 
-            context.load_file(bytes)?
+            context.load_source(LoadSource::File { filename: &bytes }, None)?
         }
     };
 

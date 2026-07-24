@@ -89,7 +89,7 @@ fn live_public_handles_are_persistent_roots() {
 fn loading_creates_an_ordinary_heap_function() {
     let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
 
-    let function_id = runtime.load_raw(empty_chunk()).unwrap();
+    let function_id = runtime.load_chunk_raw(empty_chunk()).unwrap();
 
     assert!(matches!(
         runtime.function_snapshot(function_id).unwrap(),

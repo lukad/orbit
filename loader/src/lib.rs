@@ -6,7 +6,7 @@ use std::{
 
 use orbit_common::{SourceId, Span};
 use orbit_compiler::bytecode::Chunk;
-use orbit_vm::{LoadError, LoadService};
+use orbit_vm::{LoadError, LoadService, LoadSource};
 
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
@@ -34,41 +34,36 @@ impl Loader {
 }
 
 impl LoadService for Loader {
-    fn compile_buffer(
-        &mut self,
-        source_id: SourceId,
-        _name: &[u8],
-        source: &[u8],
-    ) -> Result<Chunk, LoadError> {
-        self.compile_bytes(source_id, source)
-    }
+    fn compile(&mut self, source_id: SourceId, source: LoadSource<'_>) -> Result<Chunk, LoadError> {
+        match source {
+            LoadSource::Buffer { source, .. } => self.compile_bytes(source_id, source),
+            LoadSource::File { filename } => {
+                let path = path_from_bytes(filename)
+                    .map_err(|()| LoadError::InvalidFilenameEncoding { source_id })?;
 
-    fn compile_file(&mut self, source_id: SourceId, filename: &[u8]) -> Result<Chunk, LoadError> {
-        let path = path_from_bytes(filename)
-            .map_err(|()| LoadError::InvalidFilenameEncoding { source_id })?;
+                let mut source = fs::read(&path).map_err(|error| LoadError::FileIo {
+                    source_id,
+                    kind: error.kind(),
+                })?;
 
-        let mut source = fs::read(&path).map_err(|error| LoadError::FileIo {
-            source_id,
-            kind: error.kind(),
-        })?;
+                preprocess_file_source(&mut source);
+                self.compile_bytes(source_id, &source)
+            }
+            LoadSource::Stdin => {
+                let mut source = Vec::new();
 
-        preprocess_file_source(&mut source);
-        self.compile_bytes(source_id, &source)
-    }
+                io::stdin()
+                    .lock()
+                    .read_to_end(&mut source)
+                    .map_err(|error| LoadError::StdinIo {
+                        source_id,
+                        kind: error.kind(),
+                    })?;
 
-    fn compile_stdin(&mut self, source_id: SourceId) -> Result<Chunk, LoadError> {
-        let mut source = Vec::new();
-
-        io::stdin()
-            .lock()
-            .read_to_end(&mut source)
-            .map_err(|error| LoadError::StdinIo {
-                source_id,
-                kind: error.kind(),
-            })?;
-
-        preprocess_file_source(&mut source);
-        self.compile_bytes(source_id, &source)
+                preprocess_file_source(&mut source);
+                self.compile_bytes(source_id, &source)
+            }
+        }
     }
 
     fn file_exists(&self, filename: &[u8]) -> bool {
@@ -142,8 +137,8 @@ mod tests {
     use orbit_common::{SourceId, Span};
     use orbit_compiler::CompileErrorKind;
     use orbit_vm::{
-        CallOutcome, LoadError, LoadService, NoLoadService, State, VmError, VmErrorKind,
-        VmTraceFrame,
+        CallOutcome, LoadError, LoadService, LoadSource, NoLoadService, State, VmError,
+        VmErrorKind, VmTraceFrame,
     };
 
     use super::Loader;
@@ -193,7 +188,13 @@ mod tests {
         let source_id = SourceId::new(7);
 
         let loaded = loader
-            .compile_buffer(source_id, b"example.lua", b"return 42")
+            .compile(
+                source_id,
+                LoadSource::Buffer {
+                    name: b"example.lua",
+                    source: b"return 42",
+                },
+            )
             .unwrap();
 
         assert_eq!(loaded.entry.span.source, source_id);
@@ -204,7 +205,13 @@ mod tests {
         let mut loader = Loader::new();
 
         let lex = loader
-            .compile_buffer(SourceId::new(11), b"lex.lua", b"return @")
+            .compile(
+                SourceId::new(11),
+                LoadSource::Buffer {
+                    name: b"lex.lua",
+                    source: b"return @",
+                },
+            )
             .unwrap_err();
         let LoadError::Lex(lex) = lex else {
             panic!("invalid character should retain LexError");
@@ -212,7 +219,13 @@ mod tests {
         assert_eq!(lex.span, Span::new(SourceId::new(11), 7, 8));
 
         let parse = loader
-            .compile_buffer(SourceId::new(12), b"parse.lua", b"return )")
+            .compile(
+                SourceId::new(12),
+                LoadSource::Buffer {
+                    name: b"parse.lua",
+                    source: b"return )",
+                },
+            )
             .unwrap_err();
         let LoadError::Parse(parse) = parse else {
             panic!("invalid syntax should retain ParseError");
@@ -225,7 +238,13 @@ mod tests {
         let mut loader = Loader::new();
 
         let resolve = loader
-            .compile_buffer(SourceId::new(15), b"resolve.lua", b"goto missing")
+            .compile(
+                SourceId::new(15),
+                LoadSource::Buffer {
+                    name: b"resolve.lua",
+                    source: b"goto missing",
+                },
+            )
             .unwrap_err();
         let LoadError::Resolve { diagnostics } = resolve else {
             panic!("an unresolved label should retain resolver diagnostics");
@@ -243,7 +262,13 @@ mod tests {
             .join(",");
         let source = format!("return function({parameters}) end");
         let compile = loader
-            .compile_buffer(SourceId::new(16), b"compile.lua", source.as_bytes())
+            .compile(
+                SourceId::new(16),
+                LoadSource::Buffer {
+                    name: b"compile.lua",
+                    source: source.as_bytes(),
+                },
+            )
             .unwrap_err();
         let LoadError::Compile(compile) = compile else {
             panic!("a compiler limit should retain CompileError");
@@ -257,7 +282,13 @@ mod tests {
         let mut loader = Loader::new();
 
         let error = loader
-            .compile_buffer(SourceId::new(13), b"utf8.lua", b"return \xff")
+            .compile(
+                SourceId::new(13),
+                LoadSource::Buffer {
+                    name: b"utf8.lua",
+                    source: b"return \xff",
+                },
+            )
             .unwrap_err();
 
         assert_eq!(
@@ -273,7 +304,13 @@ mod tests {
         assert_eq!(error.source_id(), Some(SourceId::new(13)));
 
         let truncated = loader
-            .compile_buffer(SourceId::new(14), b"utf8.lua", b"return \xe2\x82")
+            .compile(
+                SourceId::new(14),
+                LoadSource::Buffer {
+                    name: b"utf8.lua",
+                    source: b"return \xe2\x82",
+                },
+            )
             .unwrap_err();
         assert_eq!(
             truncated.primary_span(),
@@ -291,10 +328,15 @@ mod tests {
         let source_id = SourceId::new(19);
 
         let chunk = loader
-            .compile_file(source_id, file.0.as_os_str().as_encoded_bytes())
+            .compile(
+                source_id,
+                LoadSource::File {
+                    filename: file.0.as_os_str().as_encoded_bytes(),
+                },
+            )
             .unwrap();
         let mut state = State::new(NoLoadService).unwrap();
-        let function = state.load(chunk).unwrap();
+        let function = state.load_chunk(chunk).unwrap();
         let error = call_error(&mut state, &function);
 
         let start = SOURCE
@@ -349,11 +391,17 @@ mod tests {
     fn precompiled_chunks_advance_the_dynamic_source_identifier_allocator() {
         let mut compiler = Loader::new();
         let precompiled = compiler
-            .compile_buffer(SourceId::new(41), b"precompiled.lua", b"return 1")
+            .compile(
+                SourceId::new(41),
+                LoadSource::Buffer {
+                    name: b"precompiled.lua",
+                    source: b"return 1",
+                },
+            )
             .unwrap();
 
         let mut state = State::new(Loader::new()).unwrap();
-        let precompiled_function = state.load(precompiled).unwrap();
+        let precompiled_function = state.load_chunk(precompiled).unwrap();
         let dynamic_function = state
             .load_buffer(b"dynamic.lua", b"return 1 + true")
             .unwrap();
@@ -374,9 +422,15 @@ mod tests {
 
         let mut compiler = Loader::new();
         let colliding = compiler
-            .compile_buffer(SourceId::new(0), b"precompiled.lua", b"return 2")
+            .compile(
+                SourceId::new(0),
+                LoadSource::Buffer {
+                    name: b"precompiled.lua",
+                    source: b"return 2",
+                },
+            )
             .unwrap();
-        let error = state.load(colliding).unwrap_err();
+        let error = state.load_chunk(colliding).unwrap_err();
 
         assert_eq!(
             error.kind,

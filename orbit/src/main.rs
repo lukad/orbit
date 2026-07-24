@@ -13,7 +13,9 @@ use ariadne::{Color, Config, IndexType, Label, Report, ReportKind, Source};
 use orbit_common::{SourceId, Span};
 use orbit_compiler::bytecode::Chunk;
 use orbit_loader::Loader;
-use orbit_vm::{CallOutcome, LoadError, LoadService, State, VmError, VmErrorKind, VmTraceFrame};
+use orbit_vm::{
+    CallOutcome, LoadError, LoadService, LoadSource, State, VmError, VmErrorKind, VmTraceFrame,
+};
 
 type SharedSources = Rc<RefCell<SourceMap>>;
 
@@ -45,7 +47,9 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let main = match state.load_file(filename) {
+    let main = match state.load_source(LoadSource::File {
+        filename: &filename,
+    }) {
         Ok(main) => main,
         Err(error) => {
             print_runtime_error(&error, &sources.borrow());
@@ -194,51 +198,61 @@ impl DiagnosticLoader {
 }
 
 impl LoadService for DiagnosticLoader {
-    fn compile_buffer(
-        &mut self,
-        source_id: SourceId,
-        name: &[u8],
-        source: &[u8],
-    ) -> Result<Chunk, LoadError> {
-        self.sources
-            .borrow_mut()
-            .insert(source_id, name, source.to_vec());
-        self.inner.compile_buffer(source_id, name, source)
-    }
+    fn compile(&mut self, source_id: SourceId, source: LoadSource<'_>) -> Result<Chunk, LoadError> {
+        match source {
+            LoadSource::Buffer { name, source } => {
+                self.sources
+                    .borrow_mut()
+                    .insert(source_id, name, source.to_vec());
+                self.inner
+                    .compile(source_id, LoadSource::Buffer { name, source })
+            }
+            LoadSource::File { filename } => {
+                let path = path_from_bytes(filename)
+                    .ok_or(LoadError::InvalidFilenameEncoding { source_id })?;
+                let mut source = std::fs::read(&path).map_err(|error| LoadError::FileIo {
+                    source_id,
+                    kind: error.kind(),
+                })?;
 
-    fn compile_file(&mut self, source_id: SourceId, filename: &[u8]) -> Result<Chunk, LoadError> {
-        let path =
-            path_from_bytes(filename).ok_or(LoadError::InvalidFilenameEncoding { source_id })?;
-        let mut source = std::fs::read(&path).map_err(|error| LoadError::FileIo {
-            source_id,
-            kind: error.kind(),
-        })?;
+                preprocess_file_source(&mut source);
+                let name = path.to_string_lossy();
+                let result = self.inner.compile(
+                    source_id,
+                    LoadSource::Buffer {
+                        name: filename,
+                        source: &source,
+                    },
+                );
+                self.sources
+                    .borrow_mut()
+                    .insert(source_id, name.as_bytes(), source);
+                result
+            }
+            LoadSource::Stdin => {
+                let mut source = Vec::new();
+                io::stdin()
+                    .lock()
+                    .read_to_end(&mut source)
+                    .map_err(|error| LoadError::StdinIo {
+                        source_id,
+                        kind: error.kind(),
+                    })?;
 
-        preprocess_file_source(&mut source);
-        let name = path.to_string_lossy();
-        let result = self.inner.compile_buffer(source_id, filename, &source);
-        self.sources
-            .borrow_mut()
-            .insert(source_id, name.as_bytes(), source);
-        result
-    }
-
-    fn compile_stdin(&mut self, source_id: SourceId) -> Result<Chunk, LoadError> {
-        let mut source = Vec::new();
-        io::stdin()
-            .lock()
-            .read_to_end(&mut source)
-            .map_err(|error| LoadError::StdinIo {
-                source_id,
-                kind: error.kind(),
-            })?;
-
-        preprocess_file_source(&mut source);
-        let result = self.inner.compile_buffer(source_id, b"<stdin>", &source);
-        self.sources
-            .borrow_mut()
-            .insert(source_id, b"<stdin>", source);
-        result
+                preprocess_file_source(&mut source);
+                let result = self.inner.compile(
+                    source_id,
+                    LoadSource::Buffer {
+                        name: b"<stdin>",
+                        source: &source,
+                    },
+                );
+                self.sources
+                    .borrow_mut()
+                    .insert(source_id, b"<stdin>", source);
+                result
+            }
+        }
     }
 
     fn file_exists(&self, filename: &[u8]) -> bool {

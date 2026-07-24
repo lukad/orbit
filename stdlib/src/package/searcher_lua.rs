@@ -1,5 +1,6 @@
 use orbit_vm::{
-    LocalValue, NativeAction, NativeContext, NativeEvent, NativeToken, VmError, VmResult,
+    LoadSource, LocalValue, NativeAction, NativeContext, NativeEvent, NativeToken, VmError,
+    VmResult,
 };
 
 use super::{check_string, path};
@@ -63,7 +64,12 @@ fn finish_path_lookup(context: &mut NativeContext<'_>) -> VmResult<NativeAction>
         }
     };
 
-    let loader = context.load_file(&filename)?;
+    let loader = context.load_source(
+        LoadSource::File {
+            filename: &filename,
+        },
+        None,
+    )?;
 
     let loader_data = context.string(filename);
 

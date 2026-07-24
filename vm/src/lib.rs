@@ -19,7 +19,7 @@ mod value;
 
 pub use error::{VmError, VmErrorKind, VmResult, VmTraceFrame};
 pub use handle::{Function, Table};
-pub use loading::{LoadError, LoadService, NoLoadService};
+pub use loading::{LoadError, LoadService, LoadSource, NoLoadService};
 pub use native::{
     ComparisonOp, LocalValue, NativeAction, NativeCallback, NativeContext, NativeEvent, NativeToken,
 };

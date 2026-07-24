@@ -8,7 +8,7 @@ use crate::{
     function::{FunctionData, FunctionSnapshot},
     handle::Function,
     id::{FunctionId, UpvalueId},
-    loading::LoadError,
+    loading::{LoadError, LoadSource},
     native::NativeCallback,
     prototype::{CaptureDescriptor, PrototypeBundle, RuntimePrototypeIndex},
     upvalue::UpvalueData,
@@ -18,12 +18,16 @@ use crate::{
 use super::Runtime;
 
 impl Runtime {
-    pub(crate) fn load_raw(&mut self, chunk: Chunk) -> FaultResult<FunctionId> {
+    pub(crate) fn load_chunk_raw(&mut self, chunk: Chunk) -> FaultResult<FunctionId> {
         self.reserve_chunk_source_ids(&chunk)?;
-        self.load_compiled_raw(chunk)
+        self.instantiate_chunk(chunk, RawValue::Table(self.globals))
     }
 
-    fn load_compiled_raw(&mut self, chunk: Chunk) -> FaultResult<FunctionId> {
+    fn instantiate_chunk(
+        &mut self,
+        chunk: Chunk,
+        environment: RawValue,
+    ) -> FaultResult<FunctionId> {
         let bundle = Rc::new(PrototypeBundle::load(chunk)?);
 
         let entry = bundle.entry();
@@ -43,7 +47,7 @@ impl Runtime {
         for (upvalue_index, descriptor) in descriptors.into_iter().enumerate() {
             match descriptor {
                 CaptureDescriptor::ExternalEnvironment => {
-                    let upvalue = self.allocate_upvalue(RawValue::Table(self.globals))?;
+                    let upvalue = self.allocate_upvalue(environment.clone())?;
                     upvalues.push(upvalue);
                 }
                 CaptureDescriptor::ParentRegister(_) | CaptureDescriptor::ParentUpvalue(_) => {
@@ -57,41 +61,23 @@ impl Runtime {
         self.allocate_lua_function(bundle, entry, upvalues.into_boxed_slice())
     }
 
-    pub(crate) fn load_buffer_raw(
+    pub(crate) fn load_source_raw(
         &mut self,
-        name: &[u8],
-        source: &[u8],
+        source: LoadSource<'_>,
+        environment: Option<RawValue>,
     ) -> FaultResult<FunctionId> {
         let source_id = self.allocate_source_id()?;
+
         let loaded = self
             .load_service
-            .compile_buffer(source_id, name, source)
+            .compile(source_id, source)
             .map_err(|error| validate_load_error_source(error, source_id))?;
 
         self.validate_compiled_source(&loaded, source_id)?;
-        self.load_compiled_raw(loaded)
-    }
 
-    pub(crate) fn load_file_raw(&mut self, filename: &[u8]) -> FaultResult<FunctionId> {
-        let source_id = self.allocate_source_id()?;
-        let loaded = self
-            .load_service
-            .compile_file(source_id, filename)
-            .map_err(|error| validate_load_error_source(error, source_id))?;
+        let environment = environment.unwrap_or(RawValue::Table(self.globals));
 
-        self.validate_compiled_source(&loaded, source_id)?;
-        self.load_compiled_raw(loaded)
-    }
-
-    pub(crate) fn load_stdin_raw(&mut self) -> FaultResult<FunctionId> {
-        let source_id = self.allocate_source_id()?;
-        let loaded = self
-            .load_service
-            .compile_stdin(source_id)
-            .map_err(|error| validate_load_error_source(error, source_id))?;
-
-        self.validate_compiled_source(&loaded, source_id)?;
-        self.load_compiled_raw(loaded)
+        self.instantiate_chunk(loaded, environment)
     }
 
     fn allocate_source_id(&mut self) -> FaultResult<SourceId> {

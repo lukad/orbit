@@ -4,7 +4,7 @@ use orbit_parser::{lexer::lex, parser::parse_chunk};
 
 use crate::{
     error::{VmError, VmErrorKind, VmResult, VmTraceFrame},
-    loading::{LoadError, LoadService, NoLoadService},
+    loading::{LoadError, LoadService, LoadSource, NoLoadService},
     native::{NativeAction, NativeCallback, NativeContext, NativeEvent, NativeToken},
     value::Value,
 };
@@ -28,26 +28,13 @@ fn compile_source(source_id: SourceId, source: &str) -> Chunk {
 struct WrongSourceIdLoadService;
 
 impl LoadService for WrongSourceIdLoadService {
-    fn compile_buffer(
-        &mut self,
-        source_id: SourceId,
-        _name: &[u8],
-        _source: &[u8],
-    ) -> Result<Chunk, LoadError> {
+    fn compile(&mut self, source_id: SourceId, source: LoadSource<'_>) -> Result<Chunk, LoadError> {
+        if !matches!(source, LoadSource::Buffer { .. }) {
+            return Err(LoadError::DynamicLoadingDisabled { source_id });
+        }
+
         let wrong_source_id = SourceId::new(source_id.get().saturating_add(1));
         Ok(compile_source(wrong_source_id, "return 42"))
-    }
-
-    fn compile_file(&mut self, _source_id: SourceId, _filename: &[u8]) -> Result<Chunk, LoadError> {
-        Err(LoadError::DynamicLoadingDisabled {
-            source_id: _source_id,
-        })
-    }
-
-    fn compile_stdin(&mut self, _source_id: SourceId) -> Result<Chunk, LoadError> {
-        Err(LoadError::DynamicLoadingDisabled {
-            source_id: _source_id,
-        })
     }
 
     fn file_exists(&self, _filename: &[u8]) -> bool {
@@ -58,27 +45,14 @@ impl LoadService for WrongSourceIdLoadService {
 struct WrongErrorSourceIdLoadService;
 
 impl LoadService for WrongErrorSourceIdLoadService {
-    fn compile_buffer(
-        &mut self,
-        source_id: SourceId,
-        _name: &[u8],
-        _source: &[u8],
-    ) -> Result<Chunk, LoadError> {
+    fn compile(&mut self, source_id: SourceId, source: LoadSource<'_>) -> Result<Chunk, LoadError> {
+        if !matches!(source, LoadSource::Buffer { .. }) {
+            return Err(LoadError::DynamicLoadingDisabled { source_id });
+        }
+
         let actual = SourceId::new(source_id.get().saturating_add(1));
         Err(LoadError::InvalidUtf8 {
             span: Span::new(actual, 0, 1),
-        })
-    }
-
-    fn compile_file(&mut self, _source_id: SourceId, _filename: &[u8]) -> Result<Chunk, LoadError> {
-        Err(LoadError::DynamicLoadingDisabled {
-            source_id: _source_id,
-        })
-    }
-
-    fn compile_stdin(&mut self, _source_id: SourceId) -> Result<Chunk, LoadError> {
-        Err(LoadError::DynamicLoadingDisabled {
-            source_id: _source_id,
         })
     }
 
@@ -88,7 +62,7 @@ impl LoadService for WrongErrorSourceIdLoadService {
 }
 
 fn execute_chunk(state: &mut State, chunk: Chunk) -> VmResult<Vec<Value>> {
-    let function = state.load(chunk)?;
+    let function = state.load_chunk(chunk)?;
 
     match state.call(&function, &[])? {
         CallOutcome::Returned(values) => Ok(values),
@@ -259,7 +233,7 @@ fn loads_and_calls_a_function_through_public_values() {
     let mut state = State::new(NoLoadService).unwrap();
 
     let function = state
-        .load(compile_source(
+        .load_chunk(compile_source(
             SourceId::new(0),
             "local value = ...; return value + 1",
         ))
@@ -340,7 +314,7 @@ fn exports_and_resumes_a_yielded_call() {
         .unwrap();
 
     let function = state
-        .load(compile_source(SourceId::new(0), "return yield_once()"))
+        .load_chunk(compile_source(SourceId::new(0), "return yield_once()"))
         .unwrap();
 
     let outcome = state.call(&function, &[]).unwrap();
@@ -365,7 +339,7 @@ fn rejects_a_function_from_another_state() {
     let mut first = State::new(NoLoadService).unwrap();
 
     let function = first
-        .load(compile_source(SourceId::new(0), "return 1"))
+        .load_chunk(compile_source(SourceId::new(0), "return 1"))
         .unwrap();
 
     let first_state = function.state_id();
@@ -1227,7 +1201,7 @@ fn suspended_calls_keep_execution_roots_during_collection() {
         .unwrap();
 
     let function = state
-        .load(compile_source(
+        .load_chunk(compile_source(
             SourceId::new(0),
             r#"
                 local protected = {}
@@ -1302,7 +1276,7 @@ fn execution_collects_automatically_after_crossing_threshold() {
     let mut state = State::new(NoLoadService).unwrap();
 
     let function = state
-        .load(compile_source(
+        .load_chunk(compile_source(
             SourceId::new(0),
             r#"
                 local survivor = {}
@@ -1761,7 +1735,7 @@ fn yielding_index_and_newindex_metamethods_resume_correctly() {
     state.set_global(b"target", &Value::Table(target)).unwrap();
 
     let function = state
-        .load(compile_source(
+        .load_chunk(compile_source(
             SourceId::new(31),
             r#"
                 local value = target.answer
@@ -2360,7 +2334,7 @@ fn yielding_call_metamethod_resumes_into_the_original_call_target() {
         .unwrap();
 
     let function = state
-        .load(compile_source(
+        .load_chunk(compile_source(
             SourceId::new(51),
             r#"
                 local value = callable(99)
@@ -2754,7 +2728,7 @@ fn yielding_arithmetic_metamethods_resume_into_the_destination_register() {
     state.set_global(b"right", &Value::Table(right)).unwrap();
 
     let function = state
-        .load(compile_source(
+        .load_chunk(compile_source(
             SourceId::new(67),
             r#"
                 local value = left + right

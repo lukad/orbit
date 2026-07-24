@@ -11,7 +11,7 @@ use orbit_common::SourceId;
 use orbit_loader::Loader;
 use orbit_stdlib::install;
 use orbit_vm::{
-    CallOutcome, LoadError, LoadService, LuaString, State, Value, VmErrorKind, VmResult,
+    CallOutcome, LoadError, LoadService, LoadSource, LuaString, State, Value, VmErrorKind, VmResult,
 };
 
 static NEXT_SCRIPT_ID: AtomicU64 = AtomicU64::new(0);
@@ -67,14 +67,14 @@ struct LoadCalls {
     stdin: usize,
 }
 
-struct StubLoadService {
+struct RecordingLoadService {
     loader: Loader,
     file_source: Box<[u8]>,
     stdin_source: Box<[u8]>,
     calls: Arc<Mutex<LoadCalls>>,
 }
 
-impl StubLoadService {
+impl RecordingLoadService {
     fn new(
         file_source: impl Into<Box<[u8]>>,
         stdin_source: impl Into<Box<[u8]>>,
@@ -93,33 +93,37 @@ impl StubLoadService {
     }
 }
 
-impl LoadService for StubLoadService {
-    fn compile_buffer(
+impl LoadService for RecordingLoadService {
+    fn compile(
         &mut self,
         source_id: SourceId,
-        name: &[u8],
-        source: &[u8],
+        source: LoadSource<'_>,
     ) -> Result<orbit_compiler::bytecode::Chunk, LoadError> {
-        self.loader.compile_buffer(source_id, name, source)
-    }
-
-    fn compile_file(
-        &mut self,
-        source_id: SourceId,
-        filename: &[u8],
-    ) -> Result<orbit_compiler::bytecode::Chunk, LoadError> {
-        self.calls.lock().unwrap().filenames.push(filename.to_vec());
-        self.loader
-            .compile_buffer(source_id, filename, &self.file_source)
-    }
-
-    fn compile_stdin(
-        &mut self,
-        source_id: SourceId,
-    ) -> Result<orbit_compiler::bytecode::Chunk, LoadError> {
-        self.calls.lock().unwrap().stdin += 1;
-        self.loader
-            .compile_buffer(source_id, b"<stdin>", &self.stdin_source)
+        match source {
+            LoadSource::Buffer { name, source } => self
+                .loader
+                .compile(source_id, LoadSource::Buffer { name, source }),
+            LoadSource::File { filename } => {
+                self.calls.lock().unwrap().filenames.push(filename.to_vec());
+                self.loader.compile(
+                    source_id,
+                    LoadSource::Buffer {
+                        name: filename,
+                        source: &self.file_source,
+                    },
+                )
+            }
+            LoadSource::Stdin => {
+                self.calls.lock().unwrap().stdin += 1;
+                self.loader.compile(
+                    source_id,
+                    LoadSource::Buffer {
+                        name: b"<stdin>",
+                        source: &self.stdin_source,
+                    },
+                )
+            }
+        }
     }
 
     fn file_exists(&self, _filename: &[u8]) -> bool {
@@ -227,7 +231,7 @@ fn dofile_preserves_structured_file_io_errors() {
 
 #[test]
 fn dofile_coerces_numeric_filenames_but_rejects_other_types() {
-    let (service, calls) = StubLoadService::new(&b"return 73"[..], &b"return 0"[..]);
+    let (service, calls) = RecordingLoadService::new(&b"return 73"[..], &b"return 0"[..]);
     let mut state = State::new(service).unwrap();
     install(&mut state).unwrap();
 
@@ -249,7 +253,7 @@ fn dofile_coerces_numeric_filenames_but_rejects_other_types() {
 
 #[test]
 fn dofile_uses_stdin_for_no_argument_and_explicit_nil() {
-    let (service, calls) = StubLoadService::new(&b"return 0"[..], &b"return 'stdin'"[..]);
+    let (service, calls) = RecordingLoadService::new(&b"return 0"[..], &b"return 'stdin'"[..]);
     let mut state = State::new(service).unwrap();
     install(&mut state).unwrap();
 

@@ -23,7 +23,7 @@ use std::{
 
 use orbit_common::SourceId;
 use orbit_loader::Loader;
-use orbit_vm::LoadService;
+use orbit_vm::{LoadService, LoadSource};
 
 const KNOWN_COMPILE_FAILURES: &[&str] = &[
     "bitwise.lua",
@@ -94,7 +94,12 @@ fn compiles_upstream_lua54_suite_sources() {
             .expect("suite file should be inside the suite directory");
         let source_id = SourceId::new(u32::try_from(index).expect("suite file index overflow"));
 
-        if let Err(error) = loader.compile_file(source_id, path.as_os_str().as_encoded_bytes()) {
+        if let Err(error) = loader.compile(
+            source_id,
+            LoadSource::File {
+                filename: path.as_os_str().as_encoded_bytes(),
+            },
+        ) {
             failures.push((relative.to_string_lossy().into_owned(), error));
         }
     }

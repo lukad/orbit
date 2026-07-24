@@ -1,10 +1,9 @@
 use std::marker::PhantomData;
 
-use orbit_compiler::bytecode::Chunk;
-
 use crate::{
     error::{VmError, VmResult},
     format::format_lua_float,
+    loading::LoadSource,
     string::LuaString,
     value::{RawValue, Value},
 };
@@ -170,10 +169,11 @@ pub(crate) trait NativeServices {
         table: &RawValue,
         previous: &RawValue,
     ) -> VmResult<Option<(RawValue, RawValue)>>;
-    fn load_chunk(&mut self, chunk: Chunk) -> VmResult<RawValue>;
-    fn load_buffer(&mut self, name: &[u8], source: &[u8]) -> VmResult<RawValue>;
-    fn load_file(&mut self, filename: &[u8]) -> VmResult<RawValue>;
-    fn load_stdin(&mut self) -> VmResult<RawValue>;
+    fn load_source(
+        &mut self,
+        source: LoadSource<'_>,
+        environment: Option<RawValue>,
+    ) -> VmResult<RawValue>;
     fn file_exists(&self, filename: &[u8]) -> bool;
 }
 
@@ -520,28 +520,14 @@ impl<'context> NativeContext<'context> {
         LocalValue::new(RawValue::String(string))
     }
 
-    pub fn load_chunk(&mut self, chunk: Chunk) -> VmResult<LocalValue<'context>> {
-        self.services.load_chunk(chunk).map(LocalValue::new)
-    }
-
-    pub fn load_buffer(
+    pub fn load_source(
         &mut self,
-        name: impl AsRef<[u8]>,
-        source: impl AsRef<[u8]>,
+        source: LoadSource<'_>,
+        environment: Option<LocalValue<'context>>,
     ) -> VmResult<LocalValue<'context>> {
         self.services
-            .load_buffer(name.as_ref(), source.as_ref())
+            .load_source(source, environment.map(LocalValue::into_raw))
             .map(LocalValue::new)
-    }
-
-    pub fn load_file(&mut self, filename: impl AsRef<[u8]>) -> VmResult<LocalValue<'context>> {
-        self.services
-            .load_file(filename.as_ref())
-            .map(LocalValue::new)
-    }
-
-    pub fn load_stdin(&mut self) -> VmResult<LocalValue<'context>> {
-        self.services.load_stdin().map(LocalValue::new)
     }
 
     pub fn file_exists(&self, filename: impl AsRef<[u8]>) -> bool {

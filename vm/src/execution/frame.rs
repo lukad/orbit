@@ -666,7 +666,7 @@ mod tests {
 
     fn frame(source: &str) -> (Runtime, CallFrame) {
         let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
-        let function = runtime.load_raw(compile_source(source)).unwrap();
+        let function = runtime.load_chunk_raw(compile_source(source)).unwrap();
 
         let invocation = match runtime.function_snapshot(function).unwrap() {
             FunctionSnapshot::Lua(invocation) => invocation,

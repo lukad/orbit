@@ -1,8 +1,9 @@
-use orbit_compiler::bytecode::{BinaryOp, Chunk};
+use orbit_compiler::bytecode::BinaryOp;
 
 use crate::{
     error::{VmError, VmErrorKind, VmResult},
     execution::operators::ComparisonOutcome,
+    loading::LoadSource,
     native::{ComparisonOp, NativeActionKind, NativeContext, NativeServices, NativeToken},
     value::{RawValue, Value},
 };
@@ -373,30 +374,13 @@ impl NativeServices for ExecutionNativeServices<'_> {
         self.runtime.next(table, previous).map_err(VmError::from)
     }
 
-    fn load_chunk(&mut self, chunk: Chunk) -> VmResult<RawValue> {
+    fn load_source(
+        &mut self,
+        source: LoadSource<'_>,
+        environment: Option<RawValue>,
+    ) -> VmResult<RawValue> {
         self.runtime
-            .load_raw(chunk)
-            .map(RawValue::Function)
-            .map_err(VmError::from)
-    }
-
-    fn load_buffer(&mut self, name: &[u8], source: &[u8]) -> VmResult<RawValue> {
-        self.runtime
-            .load_buffer_raw(name, source)
-            .map(RawValue::Function)
-            .map_err(VmError::from)
-    }
-
-    fn load_file(&mut self, filename: &[u8]) -> VmResult<RawValue> {
-        self.runtime
-            .load_file_raw(filename)
-            .map(RawValue::Function)
-            .map_err(VmError::from)
-    }
-
-    fn load_stdin(&mut self) -> VmResult<RawValue> {
-        self.runtime
-            .load_stdin_raw()
+            .load_source_raw(source, environment)
             .map(RawValue::Function)
             .map_err(VmError::from)
     }
