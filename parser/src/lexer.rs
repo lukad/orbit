@@ -3,7 +3,7 @@ use std::iter::FusedIterator;
 use logos::{Lexer as LogosLexer, Logos};
 use orbit_common::{
     SourceId, Span, Spanned,
-    number::{ParsedNumber, parse_lua_number},
+    number::{Number, parse_lua_number},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -91,19 +91,17 @@ pub enum Token {
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*", |lexer| Symbol::from(lexer.slice()))]
     Name(Symbol),
 
-    #[regex(r"[0-9]+", lex_integer)]
-    #[regex(r"0[xX][0-9A-Fa-f]+", lex_integer)]
-    Integer(i64),
-
-    #[regex(r"[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?", lex_decimal_float)]
-    #[regex(r"\.[0-9]+(?:[eE][+-]?[0-9]+)?", lex_decimal_float)]
-    #[regex(r"[0-9]+[eE][+-]?[0-9]+", lex_decimal_float)]
+    #[regex(r"[0-9]+", lex_number)]
+    #[regex(r"0[xX][0-9A-Fa-f]+", lex_number)]
+    #[regex(r"[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?", lex_number)]
+    #[regex(r"\.[0-9]+(?:[eE][+-]?[0-9]+)?", lex_number)]
+    #[regex(r"[0-9]+[eE][+-]?[0-9]+", lex_number)]
     #[regex(
         r"0[xX](?:[0-9A-Fa-f]+\.[0-9A-Fa-f]*|\.[0-9A-Fa-f]+)(?:[pP][+-]?[0-9]+)?",
-        lex_hex_float
+        lex_number
     )]
-    #[regex(r"0[xX][0-9A-Fa-f]+[pP][+-]?[0-9]+", lex_hex_float)]
-    Float(f64),
+    #[regex(r"0[xX][0-9A-Fa-f]+[pP][+-]?[0-9]+", lex_number)]
+    Number(Number),
 
     #[token("\"", lex_short_string)]
     #[token("'", lex_short_string)]
@@ -330,22 +328,8 @@ pub fn lex(source_id: SourceId, source: &str) -> LexResult<Vec<Spanned<Token>>> 
     Lexer::new(source_id, source)?.collect()
 }
 
-fn lex_integer(lexer: &mut LogosLexer<'_, Token>) -> Result<i64, LexErrorKind> {
-    match parse_lua_number(lexer.slice().as_bytes()) {
-        Some(ParsedNumber::Integer(value)) => Ok(value),
-        _ => Err(LexErrorKind::InvalidNumber),
-    }
-}
-
-fn lex_decimal_float(lexer: &mut LogosLexer<'_, Token>) -> Result<f64, LexErrorKind> {
-    match parse_lua_number(lexer.slice().as_bytes()) {
-        Some(ParsedNumber::Float(value)) => Ok(value),
-        _ => Err(LexErrorKind::InvalidNumber),
-    }
-}
-
-fn lex_hex_float(lexer: &mut LogosLexer<'_, Token>) -> Result<f64, LexErrorKind> {
-    lex_decimal_float(lexer)
+fn lex_number(lexer: &mut LogosLexer<'_, Token>) -> Result<Number, LexErrorKind> {
+    parse_lua_number(lexer.slice().as_bytes()).ok_or(LexErrorKind::InvalidNumber)
 }
 
 fn lex_short_string(lexer: &mut LogosLexer<'_, Token>) -> Result<ByteString, LexErrorKind> {
@@ -612,6 +596,14 @@ mod tests {
             .collect()
     }
 
+    fn integer(value: i64) -> Token {
+        Token::Number(Number::Integer(value))
+    }
+
+    fn float(value: f64) -> Token {
+        Token::Number(Number::Float(value))
+    }
+
     #[test]
     fn lexes_the_vertical_slice() {
         assert_eq!(
@@ -626,15 +618,15 @@ mod tests {
                 Token::Return,
                 Token::Name(Symbol::from("a")),
                 Token::Plus,
-                Token::Integer(2),
+                integer(2),
                 Token::Star,
                 Token::LeftParen,
-                Token::Integer(3),
+                integer(3),
                 Token::Minus,
-                Token::Integer(1),
+                integer(1),
                 Token::RightParen,
                 Token::Slash,
-                Token::Integer(4),
+                integer(4),
                 Token::End,
                 Token::Eof,
             ]
@@ -658,21 +650,26 @@ mod tests {
     #[test]
     fn lexes_lua_numbers_and_concatenation() {
         assert_eq!(
-            tokens("0 42 3.5 .25 1e3 0x2a 0xF0.0 0x.8 0x1.8p1 0x4p-2 1..2"),
+            tokens(
+                "0 42 3.5 .25 1e3 0x2a 0xF0.0 0x.8 0x1.8p1 0x4p-2 \
+                 9223372036854775807 9223372036854775808 1..2"
+            ),
             vec![
-                Token::Integer(0),
-                Token::Integer(42),
-                Token::Float(3.5),
-                Token::Float(0.25),
-                Token::Float(1000.0),
-                Token::Integer(42),
-                Token::Float(240.0),
-                Token::Float(0.5),
-                Token::Float(3.0),
-                Token::Float(1.0),
-                Token::Integer(1),
+                integer(0),
+                integer(42),
+                float(3.5),
+                float(0.25),
+                float(1000.0),
+                integer(42),
+                float(240.0),
+                float(0.5),
+                float(3.0),
+                float(1.0),
+                integer(i64::MAX),
+                float(9_223_372_036_854_775_808.0),
+                integer(1),
                 Token::DotDot,
-                Token::Integer(2),
+                integer(2),
                 Token::Eof,
             ]
         );
@@ -714,13 +711,12 @@ mod tests {
 
     #[test]
     fn reports_lexing_errors_with_spans() {
-        let invalid_number = "9999999999999999999999999";
-        let invalid_number_error = lex(SOURCE_ID, invalid_number).unwrap_err();
-        assert_eq!(invalid_number_error.kind, LexErrorKind::InvalidNumber);
+        let unexpected_character_error = lex(SOURCE_ID, "@").unwrap_err();
         assert_eq!(
-            invalid_number_error.span,
-            span(0, invalid_number.len() as u32)
+            unexpected_character_error.kind,
+            LexErrorKind::UnexpectedCharacter
         );
+        assert_eq!(unexpected_character_error.span, span(0, 1));
 
         let unterminated = "'unterminated";
         let unterminated_error = lex(SOURCE_ID, unterminated).unwrap_err();

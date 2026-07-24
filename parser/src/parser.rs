@@ -1,4 +1,4 @@
-use orbit_common::{SourceId, Span, Spanned};
+use orbit_common::{SourceId, Span, Spanned, number::Number};
 use strum::IntoDiscriminant;
 
 use crate::ast::{
@@ -494,19 +494,16 @@ impl<'tokens> Parser<'tokens> {
                 let token = self.advance().unwrap();
                 Ok(Expr::new(ExprKind::Boolean(true), token.span))
             }
-            Some(TokenKind::Integer) => {
+            Some(TokenKind::Number) => {
                 let token = self.advance().unwrap();
-                let Token::Integer(value) = token.value else {
+                let Token::Number(value) = token.value else {
                     unreachable!()
                 };
-                Ok(Expr::new(ExprKind::Integer(value), token.span))
-            }
-            Some(TokenKind::Float) => {
-                let token = self.advance().unwrap();
-                let Token::Float(value) = token.value else {
-                    unreachable!()
+                let value = match value {
+                    Number::Integer(value) => ExprKind::Integer(value),
+                    Number::Float(value) => ExprKind::Float(value),
                 };
-                Ok(Expr::new(ExprKind::Float(value), token.span))
+                Ok(Expr::new(value, token.span))
             }
             Some(TokenKind::String) => {
                 let token = self.advance().unwrap();
@@ -725,8 +722,7 @@ impl<'tokens> Parser<'tokens> {
                 TokenKind::Nil
                     | TokenKind::False
                     | TokenKind::True
-                    | TokenKind::Integer
-                    | TokenKind::Float
+                    | TokenKind::Number
                     | TokenKind::String
                     | TokenKind::Ellipsis
                     | TokenKind::Function

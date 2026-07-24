@@ -137,7 +137,7 @@ mod tests {
     use orbit_common::{SourceId, Span};
     use orbit_compiler::CompileErrorKind;
     use orbit_vm::{
-        CallOutcome, LoadError, LoadService, LoadSource, NoLoadService, State, VmError,
+        CallOutcome, LoadError, LoadService, LoadSource, NoLoadService, State, Value, VmError,
         VmErrorKind, VmTraceFrame,
     };
 
@@ -198,6 +198,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(loaded.entry.span.source, source_id);
+    }
+
+    #[test]
+    fn integer_shaped_decimal_overflow_loads_as_a_float() {
+        let mut state = State::new(Loader::new()).unwrap();
+        let function = state
+            .load_buffer(
+                b"integer-overflow.lua",
+                b"return -1 >> -9223372036854775808",
+            )
+            .unwrap();
+
+        let CallOutcome::Returned(values) = state.call(&function, &[]).unwrap() else {
+            panic!("integer overflow test unexpectedly yielded");
+        };
+        assert_eq!(values, vec![Value::Integer(0)]);
     }
 
     #[test]

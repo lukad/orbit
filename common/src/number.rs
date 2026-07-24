@@ -1,10 +1,10 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ParsedNumber {
+pub enum Number {
     Integer(i64),
     Float(f64),
 }
 
-impl ParsedNumber {
+impl Number {
     pub fn to_integer(self) -> Option<i64> {
         match self {
             Self::Integer(value) => Some(value),
@@ -13,7 +13,7 @@ impl ParsedNumber {
     }
 }
 
-pub fn parse_lua_number(mut source: &[u8]) -> Option<ParsedNumber> {
+pub fn parse_lua_number(mut source: &[u8]) -> Option<Number> {
     source = trim_lua_whitespace(source);
 
     let (negative, magnitude) = match source {
@@ -24,7 +24,7 @@ pub fn parse_lua_number(mut source: &[u8]) -> Option<ParsedNumber> {
     };
 
     if let Some(integer) = parse_integer(magnitude, negative) {
-        return Some(ParsedNumber::Integer(integer));
+        return Some(Number::Integer(integer));
     }
 
     let float = if magnitude.starts_with(b"0x") || magnitude.starts_with(b"0X") {
@@ -33,7 +33,7 @@ pub fn parse_lua_number(mut source: &[u8]) -> Option<ParsedNumber> {
         parse_decimal_float(magnitude)?
     };
 
-    Some(ParsedNumber::Float(if negative { -float } else { float }))
+    Some(Number::Float(if negative { -float } else { float }))
 }
 
 pub fn parse_lua_integer_with_base(mut source: &[u8], base: u32) -> Option<i64> {
