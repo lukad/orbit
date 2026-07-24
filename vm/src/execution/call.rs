@@ -40,6 +40,37 @@ impl Execution<'_> {
         })
     }
 
+    pub(super) fn tail_call(
+        &mut self,
+        base: Register,
+        arguments: Count,
+        close_from: Option<Register>,
+    ) -> FaultResult<FrameBoundary> {
+        let (callee, arguments) = {
+            let runtime = &*self.runtime;
+
+            self.stack
+                .last_mut()
+                .and_then(Activation::as_lua_mut)
+                .expect("active activation is Lua")
+                .frame_mut()
+                .collect_call(runtime, base, arguments)?
+        };
+
+        if let Some(close_from) = close_from {
+            let runtime = &*self.runtime;
+
+            self.stack
+                .last_mut()
+                .and_then(Activation::as_lua_mut)
+                .expect("active activation is Lua")
+                .frame_mut()
+                .close_upvalues_from(runtime, close_from)?;
+        }
+
+        Ok(FrameBoundary::TailInvoke { callee, arguments })
+    }
+
     pub(super) fn resolve_callable(
         &self,
         mut callee: RawValue,

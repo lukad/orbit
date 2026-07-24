@@ -105,6 +105,13 @@ impl Execution<'_> {
             } => {
                 return self.call(base, arguments, results).map(Some);
             }
+            Instruction::TailCall {
+                base,
+                arguments,
+                close_from,
+            } => {
+                return self.tail_call(base, arguments, close_from).map(Some);
+            }
             Instruction::TForCall { base, variables } => {
                 return self.generic_for_call(base, variables).map(Some);
             }

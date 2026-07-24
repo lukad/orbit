@@ -376,7 +376,7 @@ fn native_callback_can_recover_from_lua_error() {
 }
 
 #[test]
-fn yielded_native_callback_resumes() {
+fn tail_called_yielded_native_callback_resumes() {
     let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
 
     let function = runtime
@@ -420,7 +420,7 @@ fn native_error_has_native_and_lua_frames() {
         .set_global(b"explode", RawValue::Function(function))
         .unwrap();
 
-    let error = match execution(&mut runtime, "return explode()").run() {
+    let error = match execution(&mut runtime, "return (explode())").run() {
         Err(error) => error,
         Ok(_) => panic!("exploding native function unexpectedly succeeded"),
     };
@@ -434,6 +434,30 @@ fn native_error_has_native_and_lua_frames() {
     assert!(matches!(
         error.frames.get(1),
         Some(VmTraceFrame::Lua { .. })
+    ));
+}
+
+#[test]
+fn tail_called_native_error_erases_the_lua_frame() {
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+
+    let function = runtime
+        .allocate_native_function("explode", explode, Box::new([]))
+        .unwrap();
+
+    runtime
+        .set_global(b"explode", RawValue::Function(function))
+        .unwrap();
+
+    let error = match execution(&mut runtime, "return explode()").run() {
+        Err(error) => error,
+        Ok(_) => panic!("exploding native function unexpectedly succeeded"),
+    };
+
+    assert!(matches!(
+        error.frames.as_ref(),
+        [VmTraceFrame::Native { name }]
+            if name.as_ref() == "explode"
     ));
 }
 

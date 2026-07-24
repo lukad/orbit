@@ -206,7 +206,16 @@ impl<'runtime> Execution<'runtime> {
                         }
                     }
                 }
-
+                FrameBoundary::TailInvoke { callee, arguments } => {
+                    if let Err(kind) = self.replace_callable(callee, arguments) {
+                        match self.route_error(VmError::from(kind)) {
+                            Ok(()) => continue,
+                            Err(error) => {
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
                 FrameBoundary::Return { values } => {
                     let activation = self.stack.pop().expect("returning activation is active");
 
@@ -245,26 +254,38 @@ impl<'runtime> Execution<'runtime> {
         }
     }
 
+    fn build_callable_activation(
+        &self,
+        callee: RawValue,
+        arguments: Box<[RawValue]>,
+        return_to: Option<ReturnTarget>,
+    ) -> FaultResult<Activation> {
+        let (function, arguments) = self.resolve_callable(callee, arguments)?;
+
+        let snapshot = self.runtime.function_snapshot(function)?;
+
+        match snapshot {
+            FunctionSnapshot::Lua(invocation) => {
+                let frame = CallFrame::new(invocation, &arguments)?;
+                Ok(Activation::Lua(match return_to {
+                    Some(target) => LuaActivation::called(frame, target),
+                    None => LuaActivation::entry(frame),
+                }))
+            }
+            FunctionSnapshot::Native(invocation) => Ok(Activation::Native(match return_to {
+                Some(target) => NativeActivation::called(invocation, arguments, target),
+                None => NativeActivation::entry(invocation, arguments),
+            })),
+        }
+    }
+
     fn push_callable(
         &mut self,
         callee: RawValue,
         arguments: Box<[RawValue]>,
         return_to: ReturnTarget,
     ) -> FaultResult<()> {
-        let (function, arguments) = self.resolve_callable(callee, arguments)?;
-
-        let snapshot = self.runtime.function_snapshot(function)?;
-
-        let activation = match snapshot {
-            FunctionSnapshot::Lua(invocation) => Activation::Lua(LuaActivation::called(
-                CallFrame::new(invocation, &arguments)?,
-                return_to,
-            )),
-            FunctionSnapshot::Native(invocation) => {
-                Activation::Native(NativeActivation::called(invocation, arguments, return_to))
-            }
-        };
-
+        let activation = self.build_callable_activation(callee, arguments, Some(return_to))?;
         let requested = self.stack.len().saturating_add(1);
 
         self.stack
@@ -272,6 +293,30 @@ impl<'runtime> Execution<'runtime> {
             .map_err(|_| VmErrorKind::FrameCapacityExceeded { requested })?;
 
         self.stack.push(activation);
+
+        Ok(())
+    }
+
+    fn replace_callable(
+        &mut self,
+        callee: RawValue,
+        arguments: Box<[RawValue]>,
+    ) -> FaultResult<()> {
+        let return_to = self
+            .stack
+            .last()
+            .expect("tail caller is active")
+            .return_to();
+
+        let replacement = self.build_callable_activation(callee, arguments, return_to)?;
+        let active = self.stack.last_mut().expect("tail caller is active");
+
+        debug_assert!(
+            active.as_lua().is_some(),
+            "only Lua activations execute TailCall"
+        );
+
+        *active = replacement;
 
         Ok(())
     }

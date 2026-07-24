@@ -65,6 +65,10 @@ pub(crate) enum FrameBoundary {
         arguments: Box<[RawValue]>,
         target: ResultTarget,
     },
+    TailInvoke {
+        callee: RawValue,
+        arguments: Box<[RawValue]>,
+    },
     Return {
         values: Box<[RawValue]>,
     },

@@ -6,7 +6,7 @@ use crate::{
     error::VmResult, loading::NoLoadService, runtime::Runtime, string::LuaString, value::RawValue,
 };
 
-use super::Execution;
+use super::{Execution, ExecutionOutcome, FrameBoundary};
 
 fn compile_source(source: &str) -> Chunk {
     let source_id = SourceId::new(0);
@@ -172,6 +172,93 @@ fn executes_varargs_and_open_results() {
             RawValue::Integer(4),
         ],
     );
+}
+
+#[test]
+fn tail_calls_forward_all_results_to_the_original_lua_target() {
+    assert_run(
+        r#"
+            local function values()
+                return 1, nil, 3
+            end
+
+            local function relay()
+                return values()
+            end
+
+            local first, second, third = relay()
+            return first, second, third
+        "#,
+        &[RawValue::Integer(1), RawValue::Nil, RawValue::Integer(3)],
+    );
+}
+
+#[test]
+fn tail_calls_preserve_captured_arguments_after_replacing_their_frame() {
+    assert_run(
+        r#"
+            local function invoke(callback)
+                return callback()
+            end
+
+            local function wrapper()
+                local value = 42
+                return invoke(function()
+                    return value
+                end)
+            end
+
+            return wrapper()
+        "#,
+        &[RawValue::Integer(42)],
+    );
+}
+
+#[test]
+fn method_tail_calls_reuse_the_activation_stack() {
+    assert_run(
+        r#"
+            local object = {}
+
+            function object:descend(depth)
+                if depth == 0 then
+                    return 42
+                end
+
+                return self:descend(depth - 1)
+            end
+
+            return object:descend(30000)
+        "#,
+        &[RawValue::Integer(42)],
+    );
+}
+
+#[test]
+fn tail_invoke_replaces_the_active_activation() {
+    let chunk = compile_source("return (function(value) return value end)(42)");
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+
+    let function = runtime.load_chunk_raw(chunk).unwrap();
+    let function = runtime.function_snapshot(function).unwrap();
+    let mut execution = Execution::new(&mut runtime, function, Box::new([])).unwrap();
+
+    assert_eq!(execution.stack.len(), 1);
+
+    let FrameBoundary::TailInvoke { callee, arguments } = execution.run_until_boundary().unwrap()
+    else {
+        panic!("expected tail invocation");
+    };
+
+    execution.replace_callable(callee, arguments).unwrap();
+
+    assert_eq!(execution.stack.len(), 1);
+
+    let ExecutionOutcome::Returned { values, .. } = execution.run().unwrap() else {
+        panic!("tail-called Lua function unexpectedly yielded");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
 }
 
 #[test]

@@ -299,6 +299,12 @@ enum ResultContext {
     Open,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PreparedCall {
+    base: VReg,
+    arguments: Count,
+}
+
 const ONE_FIXED_RESULT: NonZeroU8 = NonZeroU8::MIN;
 
 #[derive(Debug, Clone, Copy)]
@@ -1444,6 +1450,25 @@ impl<'hir> FunctionCompiler<'hir> {
             return Ok(());
         }
 
+        if values.len() == 1 && !self.tail_call_blocked_by_to_be_closed_local() {
+            let (call_span, expr) = self.result_expr(values[0]);
+
+            match expr {
+                ResultExpr::Call { callee, arguments } => {
+                    return self.emit_tail_call(call_span, callee, &arguments, exit);
+                }
+                ResultExpr::MethodCall {
+                    receiver,
+                    method,
+                    arguments,
+                } => {
+                    return self
+                        .emit_tail_method_call(call_span, receiver, method, &arguments, exit);
+                }
+                _ => (),
+            }
+        }
+
         let mark = self.registers.temporary_mark();
         let value_count = self.emit_expr_list(values, span, ListKind::Results)?;
         let close_from = self.return_close_from(exit, span)?;
@@ -1460,6 +1485,23 @@ impl<'hir> FunctionCompiler<'hir> {
         self.registers.release_temporaries_to(mark);
 
         Ok(())
+    }
+
+    fn tail_call_blocked_by_to_be_closed_local(&self) -> bool {
+        let explicit = self
+            .active_locals
+            .iter()
+            .copied()
+            .any(|local| self.function.locals[local].attribute == Some(LocalAttribute::Close));
+
+        let generic_loop = self.active_loops.iter().copied().any(|loop_id| {
+            self.loop_targets[loop_id.0 as usize]
+                .expect("active loop has no target state")
+                .generic_closer
+                .is_some()
+        });
+
+        explicit || generic_loop
     }
 
     fn emit_expr_list(
@@ -2309,6 +2351,22 @@ impl<'hir> FunctionCompiler<'hir> {
         }
     }
 
+    fn prepare_call(
+        &mut self,
+        span: Span,
+        callee: ExprId,
+        arguments: &[ExprId],
+    ) -> Result<PreparedCall, CompileError> {
+        checked_list_count(arguments.len(), span, ListKind::Arguments)?;
+
+        let base = self.registers.reserve_temporaries(1, span)?.base;
+        self.emit_one(callee, base)?;
+
+        let arguments = self.emit_expr_list(arguments, span, ListKind::Arguments)?;
+
+        Ok(PreparedCall { base, arguments })
+    }
+
     fn emit_call(
         &mut self,
         span: Span,
@@ -2317,7 +2375,6 @@ impl<'hir> FunctionCompiler<'hir> {
         destination: VReg,
         context: ResultContext,
     ) -> Result<Count, CompileError> {
-        checked_list_count(arguments.len(), span, ListKind::Arguments)?;
         let mark = self.registers.temporary_mark();
 
         if let ResultContext::One(_) = context {
@@ -2327,21 +2384,23 @@ impl<'hir> FunctionCompiler<'hir> {
             );
         }
 
-        let base = self.registers.reserve_temporaries(1, span)?.base;
-        self.emit_one(callee, base)?;
-        let argument_count = self.emit_expr_list(arguments, span, ListKind::Arguments)?;
-        self.finish_call(span, base, argument_count, context)
+        let prepared = self.prepare_call(span, callee, arguments)?;
+
+        debug_assert_eq!(
+            prepared.base, mark,
+            "prepared call must begin at the original temporary top"
+        );
+
+        self.finish_call(span, prepared.base, prepared.arguments, context)
     }
 
-    fn emit_method_call(
+    fn prepare_method_call(
         &mut self,
         span: Span,
         receiver: ExprId,
         method: StringIndex,
         arguments: &[ExprId],
-        destination: VReg,
-        context: ResultContext,
-    ) -> Result<Count, CompileError> {
+    ) -> Result<PreparedCall, CompileError> {
         // self consumes one of the 255 fixed argument positions.
         u8::try_from(arguments.len())
             .ok()
@@ -2350,15 +2409,6 @@ impl<'hir> FunctionCompiler<'hir> {
                 span,
                 kind: CompileErrorKind::TooManyArguments,
             })?;
-
-        let mark = self.registers.temporary_mark();
-
-        if let ResultContext::One(_) = context {
-            assert!(
-                destination.get() < mark.get(),
-                "single method destination must already be reserved"
-            );
-        }
 
         let [base, receiver_register] = self.registers.reserve_temporary_array(span)?;
 
@@ -2390,17 +2440,41 @@ impl<'hir> FunctionCompiler<'hir> {
 
         let explicit_argument_count = self.emit_expr_list(arguments, span, ListKind::Arguments)?;
 
-        let argument_count = match explicit_argument_count {
+        let arguments = match explicit_argument_count {
             Count::Fixed(explicit) => Count::Fixed(
                 explicit
                     .checked_add(1)
                     .expect("method argument count was checked"),
             ),
-
             Count::Open => Count::Open,
         };
 
-        self.finish_call(span, base, argument_count, context)
+        Ok(PreparedCall { base, arguments })
+    }
+
+    fn emit_method_call(
+        &mut self,
+        span: Span,
+        receiver: ExprId,
+        method: StringIndex,
+        arguments: &[ExprId],
+        destination: VReg,
+        context: ResultContext,
+    ) -> Result<Count, CompileError> {
+        let mark = self.registers.temporary_mark();
+
+        if let ResultContext::One(_) = context {
+            assert!(
+                destination.get() < mark.get(),
+                "single method destination must already be reserved"
+            );
+        }
+
+        let prepared = self.prepare_method_call(span, receiver, method, arguments)?;
+
+        debug_assert_eq!(prepared.base, mark);
+
+        self.finish_call(span, prepared.base, prepared.arguments, context)
     }
 
     fn finish_call(
@@ -2457,6 +2531,52 @@ impl<'hir> FunctionCompiler<'hir> {
         }
 
         Ok(results)
+    }
+
+    fn emit_tail_call(
+        &mut self,
+        span: Span,
+        callee: ExprId,
+        arguments: &[ExprId],
+        exit: &ExitPlan,
+    ) -> Result<(), CompileError> {
+        let prepared = self.prepare_call(span, callee, arguments)?;
+        self.finish_tail_call(span, prepared, exit)
+    }
+
+    fn emit_tail_method_call(
+        &mut self,
+        span: Span,
+        receiver: ExprId,
+        method: StringIndex,
+        arguments: &[ExprId],
+        exit: &ExitPlan,
+    ) -> Result<(), CompileError> {
+        let prepared = self.prepare_method_call(span, receiver, method, arguments)?;
+
+        self.finish_tail_call(span, prepared, exit)
+    }
+
+    fn finish_tail_call(
+        &mut self,
+        span: Span,
+        prepared: PreparedCall,
+        exit: &ExitPlan,
+    ) -> Result<(), CompileError> {
+        let close_from = self.return_close_from(exit, span)?;
+
+        self.emitter.emit(
+            span,
+            Instruction::TailCall {
+                base: prepared.base.to_bytecode(span)?,
+                arguments: prepared.arguments,
+                close_from,
+            },
+        )?;
+
+        self.registers.release_temporaries_to(prepared.base);
+
+        Ok(())
     }
 
     fn result_expr(&self, expression: ExprId) -> (Span, ResultExpr) {
@@ -2744,6 +2864,37 @@ mod tests {
                     results,
                 } => Some((*base, *arguments, *results)),
 
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn tail_calls(chunk: &Chunk) -> Vec<(Register, Count, Option<Register>)> {
+        chunk
+            .entry
+            .code
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::TailCall {
+                    base,
+                    arguments,
+                    close_from,
+                } => Some((*base, *arguments, *close_from)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn prototype_tail_calls(prototype: &Prototype) -> Vec<(Register, Count, Option<Register>)> {
+        prototype
+            .code
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::TailCall {
+                    base,
+                    arguments,
+                    close_from,
+                } => Some((*base, *arguments, *close_from)),
                 _ => None,
             })
             .collect()
@@ -3293,14 +3444,16 @@ mod tests {
     fn adjusts_return_tail_cardinality() {
         let chunk = compile_source("return (nil)()");
 
+        assert!(calls(&chunk).is_empty());
         assert_eq!(
-            calls(&chunk),
-            vec![(Register(0), Count::Fixed(0), Count::Open)]
+            tail_calls(&chunk),
+            vec![(Register(0), Count::Fixed(0), None)]
         );
-        assert_eq!(returns(&chunk), vec![(Register(0), Count::Open)]);
+        assert!(returns(&chunk).is_empty());
 
         let chunk = compile_source("return ((nil)())");
 
+        assert!(tail_calls(&chunk).is_empty());
         assert_eq!(
             calls(&chunk),
             vec![(Register(1), Count::Fixed(0), Count::Fixed(1))]
@@ -3351,39 +3504,40 @@ mod tests {
     fn adjusts_final_call_argument_only() {
         let chunk = compile_source("return (nil)(1, 2)");
 
+        assert!(calls(&chunk).is_empty());
         assert_eq!(
-            calls(&chunk),
-            vec![(Register(0), Count::Fixed(2), Count::Open)]
+            tail_calls(&chunk),
+            vec![(Register(0), Count::Fixed(2), None)]
         );
 
         let chunk = compile_source("return (nil)((nil)())");
 
         assert_eq!(
             calls(&chunk),
-            vec![
-                (Register(1), Count::Fixed(0), Count::Open),
-                (Register(0), Count::Open, Count::Open),
-            ]
+            vec![(Register(1), Count::Fixed(0), Count::Open)]
         );
+        assert_eq!(tail_calls(&chunk), vec![(Register(0), Count::Open, None)]);
 
         let chunk = compile_source("return (nil)((nil)(), 7)");
 
         assert_eq!(
             calls(&chunk),
-            vec![
-                (Register(2), Count::Fixed(0), Count::Fixed(1)),
-                (Register(0), Count::Fixed(2), Count::Open),
-            ]
+            vec![(Register(2), Count::Fixed(0), Count::Fixed(1))]
+        );
+        assert_eq!(
+            tail_calls(&chunk),
+            vec![(Register(0), Count::Fixed(2), None)]
         );
 
         let chunk = compile_source("return (nil)(((nil)()))");
 
         assert_eq!(
             calls(&chunk),
-            vec![
-                (Register(2), Count::Fixed(0), Count::Fixed(1)),
-                (Register(0), Count::Fixed(1), Count::Open),
-            ]
+            vec![(Register(2), Count::Fixed(0), Count::Fixed(1))]
+        );
+        assert_eq!(
+            tail_calls(&chunk),
+            vec![(Register(0), Count::Fixed(1), None)]
         );
     }
 
@@ -3399,19 +3553,71 @@ mod tests {
 
         let chunk = compile_source("return (nil):m(7)");
 
+        assert!(calls(&chunk).is_empty());
         assert_eq!(
-            calls(&chunk),
-            vec![(Register(0), Count::Fixed(2), Count::Open)]
+            tail_calls(&chunk),
+            vec![(Register(0), Count::Fixed(2), None)]
         );
 
         let chunk = compile_source("return (nil):m((nil)())");
 
         assert_eq!(
             calls(&chunk),
-            vec![
-                (Register(2), Count::Fixed(0), Count::Open),
-                (Register(0), Count::Open, Count::Open),
-            ]
+            vec![(Register(2), Count::Fixed(0), Count::Open)]
+        );
+        assert_eq!(tail_calls(&chunk), vec![(Register(0), Count::Open, None)]);
+    }
+
+    #[test]
+    fn tail_calls_close_captured_locals_but_not_to_be_closed_locals() {
+        let chunk = compile_source(
+            "local value = 1\n\
+             return (nil)(function() return value end)",
+        );
+
+        assert_eq!(
+            tail_calls(&chunk),
+            vec![(Register(1), Count::Fixed(1), Some(Register(0)))]
+        );
+        assert!(returns(&chunk).is_empty());
+
+        let chunk = compile_source(
+            "local resource <close> = nil\n\
+             return (nil)()",
+        );
+
+        assert!(tail_calls(&chunk).is_empty());
+        assert_eq!(
+            calls(&chunk),
+            vec![(Register(1), Count::Fixed(0), Count::Open)]
+        );
+        assert_eq!(
+            return_details(&chunk),
+            vec![(Register(1), Count::Open, Some(Register(0)))]
+        );
+
+        let chunk = compile_source(
+            "for value in (nil) do\n\
+                 return (nil)()\n\
+             end",
+        );
+
+        assert!(tail_calls(&chunk).is_empty());
+    }
+
+    #[test]
+    fn nested_functions_emit_tail_calls_in_their_own_prototypes() {
+        let chunk = compile_source(
+            "local function relay()\n\
+                 return (nil)()\n\
+             end\n\
+             return relay",
+        );
+
+        assert_eq!(chunk.entry.children.len(), 1);
+        assert_eq!(
+            prototype_tail_calls(&chunk.entry.children[0]),
+            vec![(Register(0), Count::Fixed(0), None)]
         );
     }
 

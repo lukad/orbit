@@ -107,8 +107,12 @@ fn repl_collects_multiline_blocks_and_long_strings() {
 
 #[test]
 fn repl_tracebacks_name_declared_functions_and_main_chunks() {
-    let output =
-        run_repl("function divide(left, right)\nreturn left / right\nend\ndivide(1, \"two\")\n");
+    let output = run_repl(
+        "function divide(left, right)\n\
+         return left / right\n\
+         end\n\
+         return (divide(1, \"two\"))\n",
+    );
 
     assert!(output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();

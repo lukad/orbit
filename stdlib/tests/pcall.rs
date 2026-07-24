@@ -52,3 +52,20 @@ fn pcall_forwards_arguments_preserves_results_and_catches_errors() {
         ]
     );
 }
+
+#[test]
+fn pcall_catches_errors_from_tail_called_native_functions() {
+    let values = execute(
+        r#"
+            local function fail()
+                return error("tail failure")
+            end
+
+            local succeeded, message = pcall(fail)
+            return succeeded, message
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(values, vec![Value::Boolean(false), string("tail failure")]);
+}

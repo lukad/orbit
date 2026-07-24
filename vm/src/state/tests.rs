@@ -978,8 +978,8 @@ fn deep_lua_calls_use_the_explicit_vm_stack() {
 fn runtime_errors_retain_exact_source_maps_across_chunks() {
     let mut state = State::new(NoLoadService).unwrap();
     let failing_source = "function failing()\n    return 1 + true\nend";
-    let middle_source = "function middle()\n    return failing()\nend";
-    let calling_source = "return middle()";
+    let middle_source = "function middle()\n    return (failing())\nend";
+    let calling_source = "return (middle())";
 
     {
         let defining_chunk = compile_source(SourceId::new(1), failing_source);
@@ -1067,6 +1067,70 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
     assert_eq!(
         *instruction_span,
         Some(source_span(SourceId::new(3), calling_source, "middle()"))
+    );
+}
+
+#[test]
+fn tail_calls_erase_intermediate_trace_frames() {
+    let source = r#"
+        local function failing()
+            return 1 + true
+        end
+
+        local function middle()
+            return failing()
+        end
+
+        return middle()
+    "#;
+
+    let error = execute_source(source).unwrap_err();
+
+    assert!(matches!(error.kind, VmErrorKind::InvalidAddOperands { .. }));
+    assert_eq!(error.frames.len(), 1);
+    assert!(matches!(
+        &error.frames[0],
+        VmTraceFrame::Lua {
+            function: LuaTraceFunction::Named(name),
+            ..
+        } if name.as_ref() == "failing"
+    ));
+}
+
+#[test]
+fn failed_tail_call_resolution_retains_the_calling_trace_frame() {
+    let source = r#"
+        local function invalid()
+            return (nil)()
+        end
+
+        return invalid()
+    "#;
+
+    let error = execute_source(source).unwrap_err();
+
+    assert!(matches!(
+        error.kind,
+        VmErrorKind::InvalidCallOperand { kind: "nil" }
+    ));
+    assert_eq!(error.frames.len(), 1);
+
+    let VmTraceFrame::Lua {
+        function,
+        instruction_span,
+        ..
+    } = &error.frames[0]
+    else {
+        panic!("expected Lua trace frame");
+    };
+
+    assert!(matches!(
+        function,
+        LuaTraceFunction::Named(name) if name.as_ref() == "invalid"
+    ));
+    assert_eq!(
+        *instruction_span,
+        Some(source_span(SourceId::new(0), source, "(nil)()"))
     );
 }
 

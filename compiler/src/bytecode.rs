@@ -219,6 +219,15 @@ pub enum Instruction {
         arguments: Count,
         results: Count,
     },
+    /// Calls the function at `base` and returns its results directly to the
+    /// current function's caller. Fixed arguments occupy registers after `base`.
+    /// `Open` consumes the current open extent. `close_from` when present,
+    /// closes captured locals after collecting the call operands.
+    TailCall {
+        base: Register,
+        arguments: Count,
+        close_from: Option<Register>,
+    },
     Vararg {
         base: Register,
         results: Count,
