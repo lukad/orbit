@@ -186,3 +186,28 @@ fn invalid_indices_report_lua_argument_errors() {
         assert_sub_error(error, expected);
     }
 }
+
+#[test]
+fn install_configures_the_shared_string_metatable() {
+    let mut state = installed_state();
+
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+
+    let first = state
+        .get_metatable(&string("first"))
+        .unwrap()
+        .expect("strings should have a metatable");
+
+    let second = state
+        .get_metatable(&string("second"))
+        .unwrap()
+        .expect("strings should share a metatable");
+
+    assert_eq!(first, second);
+    assert_eq!(
+        state.raw_get(&first, &string("__index")).unwrap(),
+        Value::Table(string_library),
+    );
+}
