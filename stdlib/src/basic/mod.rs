@@ -12,6 +12,7 @@ mod print;
 mod rawget;
 mod select;
 mod setmetatable;
+mod tonumber;
 mod tostring;
 mod typ;
 
@@ -67,6 +68,9 @@ pub fn install(state: &mut State) -> VmResult<()> {
 
     let pcall = state.create_native_function("pcall", pcall::callback, &[])?;
     state.set_global(b"pcall", &Value::Function(pcall))?;
+
+    let tonumber = state.create_native_function("tonumber", tonumber::callback, &[])?;
+    state.set_global(b"tonumber", &Value::Function(tonumber))?;
 
     Ok(())
 }

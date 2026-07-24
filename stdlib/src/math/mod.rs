@@ -1,6 +1,7 @@
 mod extrema;
 mod max;
 mod min;
+mod tointeger;
 
 use orbit_vm::{State, Value, VmResult};
 
@@ -14,6 +15,9 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
 
     let min = state.create_native_function("math.min", min::callback, &[])?;
     set_field(state, &math, b"min", &Value::Function(min))?;
+
+    let tointeger = state.create_native_function("math.tointeger", tointeger::callback, &[])?;
+    set_field(state, &math, b"tointeger", &Value::Function(tointeger))?;
 
     set_field(state, &math, b"mininteger", &Value::Integer(i64::MIN))?;
     set_field(state, &math, b"maxinteger", &Value::Integer(i64::MAX))?;

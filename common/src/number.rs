@@ -36,6 +36,39 @@ pub fn parse_lua_number(mut source: &[u8]) -> Option<ParsedNumber> {
     Some(ParsedNumber::Float(if negative { -float } else { float }))
 }
 
+pub fn parse_lua_integer_with_base(mut source: &[u8], base: u32) -> Option<i64> {
+    if !(2..=36).contains(&base) {
+        return None;
+    }
+
+    source = trim_lua_whitespace(source);
+
+    let (negative, digits) = match source {
+        [b'+', rest @ ..] if !rest.is_empty() => (false, rest),
+        [b'-', rest @ ..] if !rest.is_empty() => (true, rest),
+        [] | [b'+' | b'-'] => return None,
+        _ => (false, source),
+    };
+
+    let mut value = 0_u64;
+    for &digit in digits {
+        let digit = digit_value(digit)?;
+        if digit >= base {
+            return None;
+        }
+
+        value = value
+            .wrapping_mul(u64::from(base))
+            .wrapping_add(u64::from(digit));
+    }
+
+    Some(if negative {
+        value.wrapping_neg() as i64
+    } else {
+        value as i64
+    })
+}
+
 fn parse_integer(source: &[u8], negative: bool) -> Option<i64> {
     if let Some(digits) = source
         .strip_prefix(b"0x")
@@ -250,6 +283,15 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+fn digit_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some(u32::from(byte - b'0')),
+        b'a'..=b'z' => Some(u32::from(byte - b'a') + 10),
+        b'A'..=b'Z' => Some(u32::from(byte - b'A') + 10),
+        _ => None,
+    }
+}
+
 fn float_to_integer(value: f64) -> Option<i64> {
     let minimum = i64::MIN as f64;
     let exclusive_maximum = -(i64::MIN as f64);
@@ -258,5 +300,31 @@ fn float_to_integer(value: f64) -> Option<i64> {
         Some(value as i64)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_lua_integer_with_base;
+
+    #[test]
+    fn parses_integer_numerals_in_explicit_bases() {
+        assert_eq!(parse_lua_integer_with_base(b"101", 2), Some(5));
+        assert_eq!(parse_lua_integer_with_base(b" -fF ", 16), Some(-255));
+        assert_eq!(parse_lua_integer_with_base(b"z", 36), Some(35));
+        assert_eq!(
+            parse_lua_integer_with_base(b"ffffffffffffffff", 16),
+            Some(-1)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_explicit_base_numerals() {
+        assert_eq!(parse_lua_integer_with_base(b"", 10), None);
+        assert_eq!(parse_lua_integer_with_base(b"+", 10), None);
+        assert_eq!(parse_lua_integer_with_base(b"2", 2), None);
+        assert_eq!(parse_lua_integer_with_base(b"10x", 10), None);
+        assert_eq!(parse_lua_integer_with_base(b"10", 1), None);
+        assert_eq!(parse_lua_integer_with_base(b"10", 37), None);
     }
 }

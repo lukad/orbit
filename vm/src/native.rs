@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use orbit_common::number::{ParsedNumber, parse_lua_number};
+use orbit_common::number::{ParsedNumber, parse_lua_integer_with_base, parse_lua_number};
 
 use crate::{
     error::{VmError, VmResult},
@@ -81,6 +81,27 @@ impl<'context> LocalValue<'context> {
             },
             _ => self.raw.to_float(),
         }
+    }
+
+    pub fn to_number(&self) -> Option<Self> {
+        let raw = match &self.raw {
+            RawValue::Integer(_) | RawValue::Float(_) => self.raw.clone(),
+            RawValue::String(value) => match parse_lua_number(value.as_bytes())? {
+                ParsedNumber::Integer(value) => RawValue::Integer(value),
+                ParsedNumber::Float(value) => RawValue::Float(value),
+            },
+            _ => return None,
+        };
+
+        Some(Self::new(raw))
+    }
+
+    pub fn to_integer_with_base(&self, base: u32) -> Option<i64> {
+        let RawValue::String(value) = &self.raw else {
+            return None;
+        };
+
+        parse_lua_integer_with_base(value.as_bytes(), base)
     }
 
     pub fn is_number(&self) -> bool {

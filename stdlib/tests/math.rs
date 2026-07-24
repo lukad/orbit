@@ -243,3 +243,78 @@ fn extrema_report_missing_and_incomparable_arguments() {
         |frame| matches!(frame, VmTraceFrame::Native { name } if name.as_ref() == "math.min")
     ));
 }
+
+#[test]
+fn tointeger_converts_exact_numbers_and_numeric_strings() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.tointeger(42),
+                math.tointeger(42.0),
+                math.tointeger("42"),
+                math.tointeger("42.0"),
+                math.tointeger(math.mininteger),
+                math.tointeger("-9223372036854775808"),
+                math.tointeger(math.maxinteger),
+                math.tointeger("9223372036854775807")
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(42),
+            Value::Integer(42),
+            Value::Integer(42),
+            Value::Integer(42),
+            Value::Integer(i64::MIN),
+            Value::Integer(i64::MIN),
+            Value::Integer(i64::MAX),
+            Value::Integer(i64::MAX),
+        ],
+    );
+}
+
+#[test]
+fn tointeger_returns_nil_for_values_without_an_integer_representation() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.tointeger(34.3),
+                math.tointeger("34.3"),
+                math.tointeger("not a number"),
+                math.tointeger({}),
+                math.tointeger(0 / 0),
+                math.tointeger(1 / 0),
+                math.tointeger(-1 / 0),
+                math.tointeger(0.0 - math.mininteger)
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(values, vec![Value::Nil; 8]);
+}
+
+#[test]
+fn tointeger_reports_a_missing_value() {
+    let mut state = installed_state();
+    let missing = execute(&mut state, "return math.tointeger()").unwrap_err();
+
+    assert_eq!(
+        missing.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #1 to 'tointeger' (value expected)".into(),
+        }
+    );
+    assert!(matches!(
+        missing.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "math.tointeger"
+    ));
+}
