@@ -8,7 +8,7 @@
 //!
 //! Each Lua file is a separate Rust test, so normal Cargo filtering works:
 //!
-//! `cargo test -p orbit --test lua54_suite runtime_vararg -- --ignored --nocapture`
+//! `cargo test -p orbit --test lua54_suite runtime_vararg -- --nocapture`
 
 use std::{
     collections::BTreeSet,
@@ -134,15 +134,25 @@ fn compiles_upstream_lua54_suite_sources() {
     );
 }
 
+macro_rules! lua54_runtime_test {
+    (enabled $name:ident => $file:literal) => {
+        #[test]
+        fn $name() {
+            run_upstream_file($file);
+        }
+    };
+    (ignored $name:ident => $file:literal) => {
+        #[test]
+        #[ignore = "upstream Lua 5.4 runtime conformance case"]
+        fn $name() {
+            run_upstream_file($file);
+        }
+    };
+}
+
 macro_rules! lua54_runtime_tests {
-    ($($name:ident => $file:literal),+ $(,)?) => {
-        $(
-            #[test]
-            #[ignore = "upstream Lua 5.4 runtime conformance case"]
-            fn $name() {
-                run_upstream_file($file);
-            }
-        )+
+    ($($status:ident $name:ident => $file:literal),+ $(,)?) => {
+        $(lua54_runtime_test!($status $name => $file);)+
     };
 }
 
@@ -151,33 +161,33 @@ macro_rules! lua54_runtime_tests {
 // case for Orbit. `tracegc.lua` and `bwcoercion.lua` are helper modules loaded
 // by tests below rather than standalone cases.
 lua54_runtime_tests! {
-    runtime_gc => "gc.lua",
-    runtime_db => "db.lua",
-    runtime_calls => "calls.lua",
-    runtime_strings => "strings.lua",
-    runtime_literals => "literals.lua",
-    runtime_tpack => "tpack.lua",
-    runtime_attrib => "attrib.lua",
-    runtime_gengc => "gengc.lua",
-    runtime_locals => "locals.lua",
-    runtime_constructs => "constructs.lua",
-    runtime_code => "code.lua",
-    runtime_big => "big.lua",
-    runtime_cstack => "cstack.lua",
-    runtime_nextvar => "nextvar.lua",
-    runtime_pm => "pm.lua",
-    runtime_utf8 => "utf8.lua",
-    runtime_events => "events.lua",
-    runtime_vararg => "vararg.lua",
-    runtime_closure => "closure.lua",
-    runtime_coroutine => "coroutine.lua",
-    runtime_goto => "goto.lua",
-    runtime_errors => "errors.lua",
-    runtime_math => "math.lua",
-    runtime_sort => "sort.lua",
-    runtime_bitwise => "bitwise.lua",
-    runtime_verybig => "verybig.lua",
-    runtime_files => "files.lua",
+    ignored runtime_gc => "gc.lua",
+    ignored runtime_db => "db.lua",
+    ignored runtime_calls => "calls.lua",
+    ignored runtime_strings => "strings.lua",
+    ignored runtime_literals => "literals.lua",
+    ignored runtime_tpack => "tpack.lua",
+    ignored runtime_attrib => "attrib.lua",
+    ignored runtime_gengc => "gengc.lua",
+    ignored runtime_locals => "locals.lua",
+    ignored runtime_constructs => "constructs.lua",
+    ignored runtime_code => "code.lua",
+    ignored runtime_big => "big.lua",
+    ignored runtime_cstack => "cstack.lua",
+    ignored runtime_nextvar => "nextvar.lua",
+    ignored runtime_pm => "pm.lua",
+    ignored runtime_utf8 => "utf8.lua",
+    ignored runtime_events => "events.lua",
+    enabled runtime_vararg => "vararg.lua",
+    ignored runtime_closure => "closure.lua",
+    ignored runtime_coroutine => "coroutine.lua",
+    ignored runtime_goto => "goto.lua",
+    ignored runtime_errors => "errors.lua",
+    ignored runtime_math => "math.lua",
+    ignored runtime_sort => "sort.lua",
+    ignored runtime_bitwise => "bitwise.lua",
+    ignored runtime_verybig => "verybig.lua",
+    ignored runtime_files => "files.lua",
 }
 
 fn run_upstream_file(test: &str) {
