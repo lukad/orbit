@@ -7,6 +7,7 @@ mod ipairs;
 mod load;
 mod next;
 mod pairs;
+mod pcall;
 mod print;
 mod rawget;
 mod select;
@@ -63,6 +64,9 @@ pub fn install(state: &mut State) -> VmResult<()> {
 
     let select = state.create_native_function("select", select::callback, &[])?;
     state.set_global(b"select", &Value::Function(select))?;
+
+    let pcall = state.create_native_function("pcall", pcall::callback, &[])?;
+    state.set_global(b"pcall", &Value::Function(pcall))?;
 
     Ok(())
 }

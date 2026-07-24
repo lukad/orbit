@@ -30,7 +30,7 @@ pub enum NativeEvent {
     ResumeError { token: NativeToken },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LocalValue<'context> {
     raw: RawValue,
     marker: PhantomData<&'context mut ()>,
