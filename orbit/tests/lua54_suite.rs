@@ -26,8 +26,6 @@ use orbit_loader::Loader;
 use orbit_vm::{LoadService, LoadSource};
 
 const KNOWN_COMPILE_FAILURES: &[&str] = &[
-    "bitwise.lua",
-    "code.lua",
     "literals.lua",
     "math.lua",
     "strings.lua",

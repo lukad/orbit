@@ -96,9 +96,10 @@ pub enum Token {
     #[regex(r"\.[0-9]+(?:[eE][+-]?[0-9]+)?", lex_decimal_float)]
     #[regex(r"[0-9]+[eE][+-]?[0-9]+", lex_decimal_float)]
     #[regex(
-        r"0[xX](?:[0-9A-Fa-f]+\.[0-9A-Fa-f]*|\.[0-9A-Fa-f]+|[0-9A-Fa-f]+)[pP][+-]?[0-9]+",
+        r"0[xX](?:[0-9A-Fa-f]+\.[0-9A-Fa-f]*|\.[0-9A-Fa-f]+)(?:[pP][+-]?[0-9]+)?",
         lex_hex_float
     )]
+    #[regex(r"0[xX][0-9A-Fa-f]+[pP][+-]?[0-9]+", lex_hex_float)]
     Float(f64),
 
     #[token("\"", lex_short_string)]
@@ -692,7 +693,7 @@ mod tests {
     #[test]
     fn lexes_lua_numbers_and_concatenation() {
         assert_eq!(
-            tokens("0 42 3.5 .25 1e3 0x2a 0x1.8p1 1..2"),
+            tokens("0 42 3.5 .25 1e3 0x2a 0xF0.0 0x.8 0x1.8p1 0x4p-2 1..2"),
             vec![
                 Token::Integer(0),
                 Token::Integer(42),
@@ -700,7 +701,10 @@ mod tests {
                 Token::Float(0.25),
                 Token::Float(1000.0),
                 Token::Integer(42),
+                Token::Float(240.0),
+                Token::Float(0.5),
                 Token::Float(3.0),
+                Token::Float(1.0),
                 Token::Integer(1),
                 Token::DotDot,
                 Token::Integer(2),
