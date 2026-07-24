@@ -11,5 +11,7 @@ ariadne.workspace = true
 orbit-common.workspace = true
 orbit-compiler.workspace = true
 orbit-loader.workspace = true
+orbit-parser.workspace = true
 orbit-stdlib.workspace = true
 orbit-vm.workspace = true
+rustyline = { version = "18", default-features = false, features = ["custom-bindings", "with-file-history"] }
