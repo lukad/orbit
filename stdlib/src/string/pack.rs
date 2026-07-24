@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-const FUNCTION_NAME: &str = "pack";
+pub(crate) const FUNCTION_NAME: &str = "pack";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let format_value = required_string(context, FUNCTION_NAME, 0)?;

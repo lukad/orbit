@@ -2,7 +2,7 @@ use orbit_vm::{NativeAction, NativeContext, VmResult};
 
 use crate::{argument, error};
 
-const FUNCTION_NAME: &str = "sub";
+pub(crate) const FUNCTION_NAME: &str = "sub";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let subject = context

@@ -564,6 +564,26 @@ impl<'context> NativeContext<'context> {
         LocalValue::new(RawValue::String(string))
     }
 
+    pub fn pointer_representation(&self, value: &LocalValue<'context>) -> LocalValue<'context> {
+        let representation = match value.raw() {
+            RawValue::String(value) => format!("0x{:016x}", value.identity()),
+            RawValue::Table(_) | RawValue::Function(_) => {
+                let object = value
+                    .raw()
+                    .object_id()
+                    .expect("tables and functions have object identities");
+                format!("0x{:08x}{:08x}", object.slot(), object.generation())
+            }
+            RawValue::Nil | RawValue::Boolean(_) | RawValue::Integer(_) | RawValue::Float(_) => {
+                "(null)".to_owned()
+            }
+        };
+
+        LocalValue::new(RawValue::String(LuaString::from(
+            representation.into_bytes(),
+        )))
+    }
+
     pub fn load_source(
         &mut self,
         source: LoadSource<'_>,

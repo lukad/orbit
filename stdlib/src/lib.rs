@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 mod argument;
 mod basic;
 mod error;
@@ -19,7 +21,7 @@ pub fn install(state: &mut State) -> VmResult<()> {
 pub(crate) fn set_field(
     state: &mut State,
     table: &Table,
-    name: &[u8],
+    name: impl AsRef<[u8]>,
     value: &Value,
 ) -> VmResult<()> {
     state.raw_set(table, &Value::String(LuaString::new(name)), value)

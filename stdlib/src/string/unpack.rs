@@ -6,7 +6,7 @@ use crate::{
     string::packing::{Endian, FormatParser, ItemKind, read_integer},
 };
 
-const FUNCTION_NAME: &str = "unpack";
+pub(crate) const FUNCTION_NAME: &str = "unpack";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let format_value = required_string(context, FUNCTION_NAME, 0)?;

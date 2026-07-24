@@ -184,6 +184,7 @@ dependencies = [
  "orbit-compiler",
  "orbit-loader",
  "orbit-vm",
+ "thiserror",
 ]
 
 [[package]]

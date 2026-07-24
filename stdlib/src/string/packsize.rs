@@ -4,7 +4,7 @@ use crate::error;
 
 use super::packing;
 
-const FUNCTION_NAME: &str = "packsize";
+pub(crate) const FUNCTION_NAME: &str = "packsize";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let format = context
