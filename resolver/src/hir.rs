@@ -87,6 +87,7 @@ impl StringId {
 
 #[derive(Debug)]
 pub struct HirFunction {
+    pub name: Option<Symbol>,
     pub span: Span,
     pub parameters: Vec<LocalId>,
     pub is_vararg: bool,

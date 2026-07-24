@@ -14,6 +14,7 @@ fn empty_chunk() -> Chunk {
     Chunk {
         strings: Box::new([]),
         entry: Prototype {
+            name: None,
             span: Span::new(SourceId::new(0), 0, 0),
             parameter_count: 0,
             is_vararg: true,

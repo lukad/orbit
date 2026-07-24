@@ -17,7 +17,7 @@ mod table;
 mod upvalue;
 mod value;
 
-pub use error::{VmError, VmErrorKind, VmResult, VmTraceFrame};
+pub use error::{LuaTraceFunction, VmError, VmErrorKind, VmResult, VmTraceFrame};
 pub use handle::{Function, Table};
 pub use loading::{LoadError, LoadService, LoadSource, NoLoadService};
 pub use native::{

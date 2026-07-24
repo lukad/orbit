@@ -3,7 +3,7 @@ use orbit_compiler::bytecode::{BinaryOp, Chunk, Instruction, SourceMapEntry};
 use orbit_parser::{lexer::lex, parser::parse_chunk};
 
 use crate::{
-    error::{VmError, VmErrorKind, VmResult, VmTraceFrame},
+    error::{LuaTraceFunction, VmError, VmErrorKind, VmResult, VmTraceFrame},
     loading::{LoadError, LoadService, LoadSource, NoLoadService},
     native::{NativeAction, NativeCallback, NativeContext, NativeEvent, NativeToken},
     value::Value,
@@ -1013,6 +1013,7 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
     assert_eq!(error.frames.len(), 3);
 
     let VmTraceFrame::Lua {
+        function,
         function_span,
         pc,
         instruction_span,
@@ -1020,6 +1021,10 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
     else {
         panic!("expected innermost Lua frame");
     };
+    assert!(matches!(
+        function,
+        LuaTraceFunction::Named(name) if name.as_ref() == "failing"
+    ));
     assert_eq!(function_span.source, SourceId::new(1));
     assert_eq!(*pc, 2);
     assert_eq!(
@@ -1028,6 +1033,7 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
     );
 
     let VmTraceFrame::Lua {
+        function,
         function_span,
         pc,
         instruction_span,
@@ -1035,6 +1041,10 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
     else {
         panic!("expected middle Lua frame");
     };
+    assert!(matches!(
+        function,
+        LuaTraceFunction::Named(name) if name.as_ref() == "middle"
+    ));
     assert_eq!(function_span.source, SourceId::new(2));
     assert_eq!(*pc, 3);
     assert_eq!(
@@ -1043,6 +1053,7 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
     );
 
     let VmTraceFrame::Lua {
+        function,
         function_span,
         pc,
         instruction_span,
@@ -1050,6 +1061,7 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
     else {
         panic!("expected outermost Lua frame");
     };
+    assert_eq!(function, &LuaTraceFunction::MainChunk);
     assert_eq!(function_span.source, SourceId::new(3));
     assert_eq!(*pc, 3);
     assert_eq!(

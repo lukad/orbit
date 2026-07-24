@@ -106,6 +106,17 @@ fn repl_collects_multiline_blocks_and_long_strings() {
 }
 
 #[test]
+fn repl_tracebacks_name_declared_functions_and_main_chunks() {
+    let output =
+        run_repl("function divide(left, right)\nreturn left / right\nend\ndivide(1, \"two\")\n");
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("in function 'divide'"), "{stderr}");
+    assert!(stderr.contains("in main chunk"), "{stderr}");
+}
+
+#[test]
 fn repl_continues_an_unterminated_string_with_an_escaped_newline() {
     let output = run_repl("print(\"hello\\\nfrom a short string\")\n");
 

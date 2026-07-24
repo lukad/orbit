@@ -5,7 +5,7 @@ use orbit_compiler::bytecode::{
 };
 
 use crate::{
-    error::{FaultResult, VmErrorKind, VmTraceFrame},
+    error::{FaultResult, LuaTraceFunction, VmErrorKind, VmTraceFrame},
     function::LuaInvocation,
     id::{FunctionId, ObjectId, UpvalueId},
     prototype::{
@@ -536,8 +536,16 @@ impl CallFrame {
     pub(crate) fn trace_frame(&self) -> VmTraceFrame {
         let pc = self.current_pc.unwrap_or(self.pc);
         let prototype = self.runtime_prototype();
+        let function = if self.prototype == RuntimePrototypeIndex::ENTRY {
+            LuaTraceFunction::MainChunk
+        } else if let Some(name) = prototype.name() {
+            LuaTraceFunction::Named(name.into())
+        } else {
+            LuaTraceFunction::Anonymous
+        };
 
         VmTraceFrame::Lua {
+            function,
             function_span: prototype.function_span(),
             pc,
             instruction_span: prototype.instruction_span(pc),

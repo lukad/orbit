@@ -137,19 +137,19 @@ pub(crate) fn print_runtime_error(error: &VmError, sources: &SourceMap) {
     for frame in &error.frames {
         match frame {
             VmTraceFrame::Lua {
+                function,
                 function_span,
                 pc,
                 instruction_span,
-                ..
             } => {
                 let span = instruction_span.unwrap_or(*function_span);
 
                 if let Some(source) = sources.get(span.source) {
                     let (line, column) = line_column(&source.text, span.start);
-                    eprintln!("\t{}:{line}:{column} (pc {pc})", source.name);
+                    eprintln!("\t{}:{line}:{column} (pc {pc}): {function}", source.name);
                 } else {
                     eprintln!(
-                        "\t[source {} bytes {}..{}, pc {}]",
+                        "\t[source {} bytes {}..{}, pc {}]: {function}",
                         span.source.get(),
                         span.start,
                         span.end,
@@ -158,7 +158,7 @@ pub(crate) fn print_runtime_error(error: &VmError, sources: &SourceMap) {
                 }
             }
             VmTraceFrame::Native { name } => {
-                eprintln!("\t[native: {name}]");
+                eprintln!("\t[C]: in function '{name}'");
             }
         }
     }

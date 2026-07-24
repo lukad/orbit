@@ -2578,6 +2578,10 @@ fn compile_function(
     let emitted = compiler.emitter.finish()?;
 
     Ok(Prototype {
+        name: function
+            .name
+            .as_ref()
+            .map(|name| Box::<str>::from(name.as_str())),
         span: function.span,
         parameter_count,
         is_vararg: function.is_vararg,

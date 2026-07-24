@@ -164,10 +164,29 @@ impl From<LoadError> for VmErrorKind {
 
 pub(crate) type FaultResult<T> = Result<T, VmErrorKind>;
 
+/// Describes how a Lua frame should be identified in a traceback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LuaTraceFunction {
+    MainChunk,
+    Named(Box<str>),
+    Anonymous,
+}
+
+impl std::fmt::Display for LuaTraceFunction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MainChunk => formatter.write_str("in main chunk"),
+            Self::Named(name) => write!(formatter, "in function '{name}'"),
+            Self::Anonymous => formatter.write_str("in anonymous function"),
+        }
+    }
+}
+
 /// One frame in a runtime traceback, ordered from the innermost frame outward.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmTraceFrame {
     Lua {
+        function: LuaTraceFunction,
         function_span: Span,
         pc: usize,
         instruction_span: Option<Span>,
@@ -222,6 +241,7 @@ impl std::fmt::Display for VmError {
         for frame in &self.frames {
             match frame {
                 VmTraceFrame::Lua {
+                    function,
                     function_span,
                     pc,
                     instruction_span,
@@ -229,7 +249,7 @@ impl std::fmt::Display for VmError {
                     let span = instruction_span.unwrap_or(*function_span);
                     write!(
                         formatter,
-                        "\n\t[source {} bytes {}..{}, pc {}]",
+                        "\n\t[source {} bytes {}..{}, pc {}]: {function}",
                         span.source.get(),
                         span.start,
                         span.end,
@@ -237,7 +257,7 @@ impl std::fmt::Display for VmError {
                     )?;
                 }
                 VmTraceFrame::Native { name } => {
-                    write!(formatter, "\n\t[native: {name}]")?;
+                    write!(formatter, "\n\t[C]: in function '{name}'")?;
                 }
             }
         }

@@ -137,6 +137,7 @@ fn load_prototype(
         .into_boxed_slice();
 
     let runtime_prototype = RuntimePrototype {
+        name: prototype.name,
         function_span: prototype.span,
         parameter_count: prototype.parameter_count,
         is_vararg: prototype.is_vararg,
@@ -155,6 +156,7 @@ fn load_prototype(
 
 #[derive(Debug)]
 pub(crate) struct RuntimePrototype {
+    name: Option<Box<str>>,
     function_span: Span,
     parameter_count: u8,
     is_vararg: bool,
@@ -167,6 +169,10 @@ pub(crate) struct RuntimePrototype {
 }
 
 impl RuntimePrototype {
+    pub(crate) fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
     pub(crate) fn function_span(&self) -> Span {
         self.function_span
     }

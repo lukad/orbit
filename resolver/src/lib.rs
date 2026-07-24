@@ -74,7 +74,7 @@ impl<'ast> Resolver<'ast> {
         self.push_root_function(self.chunk.span);
         let body = self.resolve_function_body(&[], self.chunk);
         self.finalize_current_gotos();
-        let entry = self.pop_function(body);
+        let entry = self.pop_function(body, None);
 
         if self.diagnostics.is_empty() {
             Ok(HirChunk {
@@ -122,7 +122,7 @@ impl<'ast> Resolver<'ast> {
         self.functions.push(FunctionBuilder::new(span, is_vararg));
     }
 
-    fn pop_function(&mut self, body: BlockId) -> HirFunction {
+    fn pop_function(&mut self, body: BlockId, name: Option<Symbol>) -> HirFunction {
         let function = self
             .functions
             .pop()
@@ -133,6 +133,7 @@ impl<'ast> Resolver<'ast> {
         debug_assert!(function.pending_gotos.is_empty());
 
         HirFunction {
+            name,
             span: function.span,
             parameters: function.parameters,
             is_vararg: function.is_vararg,
@@ -153,6 +154,7 @@ impl<'ast> Resolver<'ast> {
         &mut self,
         body: &FunctionBody,
         implicit_self: Option<Spanned<Symbol>>,
+        name: Option<Symbol>,
     ) -> ChildFunctionId {
         self.push_nested_function(body.span, body.is_variadic);
 
@@ -165,7 +167,7 @@ impl<'ast> Resolver<'ast> {
 
         let body_id = self.resolve_function_body(&parameters, &body.body);
         self.finalize_current_gotos();
-        let function = self.pop_function(body_id);
+        let function = self.pop_function(body_id, name);
 
         let parent = self.current_function_mut();
         let id = ChildFunctionId(
@@ -579,7 +581,7 @@ impl<'ast> Resolver<'ast> {
         body: &FunctionBody,
     ) -> StmtId {
         let local = self.declare_local(name.clone(), None);
-        let child = self.resolve_nested_function(body, None);
+        let child = self.resolve_nested_function(body, None, Some(name.value.clone()));
         let closure = self.push_expression(body.span, HirExprKind::Closure(child));
         self.push_statement(
             span,
@@ -601,7 +603,11 @@ impl<'ast> Resolver<'ast> {
             value: Symbol::from("self"),
             span: method.span,
         });
-        let child = self.resolve_nested_function(body, implicit_self);
+        let child = self.resolve_nested_function(
+            body,
+            implicit_self,
+            Some(Self::declared_function_name(name)),
+        );
         let closure = self.push_expression(body.span, HirExprKind::Closure(child));
         self.push_statement(
             span,
@@ -643,6 +649,22 @@ impl<'ast> Resolver<'ast> {
             span: name.name.span.join(&final_field.span),
             kind: HirPlaceKind::Index { table, key },
         })
+    }
+
+    fn declared_function_name(name: &FunctionName) -> Symbol {
+        let mut declared = name.name.value.as_str().to_owned();
+
+        for field in &name.fields {
+            declared.push('.');
+            declared.push_str(field.value.as_str());
+        }
+
+        if let Some(method) = &name.method {
+            declared.push(':');
+            declared.push_str(method.value.as_str());
+        }
+
+        Symbol::from(declared)
     }
 
     fn resolve_while(&mut self, span: Span, condition: &Expr, body: &Block) -> StmtId {
@@ -1022,7 +1044,7 @@ impl<'ast> Resolver<'ast> {
             }
             ExprKind::Call(call) => return self.resolve_call(call, expression.span),
             ExprKind::Function(body) => {
-                HirExprKind::Closure(self.resolve_nested_function(body, None))
+                HirExprKind::Closure(self.resolve_nested_function(body, None, None))
             }
             ExprKind::Table(fields) => HirExprKind::Table {
                 fields: fields
@@ -1443,6 +1465,7 @@ mod tests {
     fn local_function_is_visible_to_its_own_body() {
         let chunk = resolved("local function recurse() return recurse end");
         let root = &chunk.entry;
+        assert_eq!(root.children[0].name.as_ref().unwrap().as_str(), "recurse");
         assert!(root.locals[LocalId(0)].captured);
         assert!(matches!(
             root.children[0].upvalues[UpvalueId(0)].source,
@@ -1453,6 +1476,10 @@ mod tests {
     #[test]
     fn named_methods_lower_to_index_assignment_and_implicit_self() {
         let chunk = resolved("local t = {}; function t.child:run(value) return self, value end");
+        assert_eq!(
+            chunk.entry.children[0].name.as_ref().unwrap().as_str(),
+            "t.child:run"
+        );
         let statements = root_statements(&chunk);
         let HirStmtKind::Assign { targets, values } = &chunk.entry.statements[statements[1]].kind
         else {

@@ -41,6 +41,7 @@ pub struct Chunk {
 
 #[derive(Debug)]
 pub struct Prototype {
+    pub name: Option<Box<str>>,
     pub span: Span,
     pub parameter_count: u8,
     pub is_vararg: bool,
