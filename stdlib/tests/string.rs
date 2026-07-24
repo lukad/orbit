@@ -28,6 +28,20 @@ fn call_sub(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
     }
 }
 
+fn call_unpack(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(unpack) = state.raw_get(&string_library, &string("unpack"))? else {
+        panic!("string.unpack was not installed as a function");
+    };
+
+    match state.call(&unpack, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.unpack unexpectedly yielded"),
+    }
+}
+
 fn assert_sub_error(error: VmError, expected: &str) {
     assert_eq!(
         error.kind,
@@ -210,4 +224,114 @@ fn install_configures_the_shared_string_metatable() {
         state.raw_get(&first, &string("__index")).unwrap(),
         Value::Table(string_library),
     );
+}
+
+#[test]
+fn unpack_decodes_integer_formats_and_returns_the_next_position() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        call_unpack(
+            &mut state,
+            &[
+                string("<i2>I2bB"),
+                string([0x34, 0x12, 0x12, 0x34, 0xff, 0xfe]),
+            ],
+        )
+        .unwrap(),
+        vec![
+            Value::Integer(0x1234),
+            Value::Integer(0x1234),
+            Value::Integer(-1),
+            Value::Integer(0xfe),
+            Value::Integer(7),
+        ],
+    );
+}
+
+#[test]
+fn unpack_decodes_floats_and_strings() {
+    let mut state = installed_state();
+    let mut numbers = Vec::new();
+    numbers.extend_from_slice(&1.5f32.to_le_bytes());
+    numbers.extend_from_slice(&(-2.25f64).to_be_bytes());
+
+    assert_eq!(
+        call_unpack(&mut state, &[string("<f>d"), string(numbers)]).unwrap(),
+        vec![Value::Float(1.5), Value::Float(-2.25), Value::Integer(13),],
+    );
+
+    assert_eq!(
+        call_unpack(&mut state, &[string("c3s1z"), string(b"abc\x03xyzhi\0")],).unwrap(),
+        vec![
+            string("abc"),
+            string("xyz"),
+            string("hi"),
+            Value::Integer(11),
+        ],
+    );
+}
+
+#[test]
+fn unpack_honors_alignment_and_relative_positions() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        call_unpack(
+            &mut state,
+            &[
+                string("<!4 i4"),
+                string([0, 0, 0, 0, 42, 0, 0, 0]),
+                Value::Integer(2),
+            ],
+        )
+        .unwrap(),
+        vec![Value::Integer(42), Value::Integer(9)],
+    );
+
+    assert_eq!(
+        call_unpack(
+            &mut state,
+            &[
+                string("<i2"),
+                string([0, 0, 0x34, 0x12]),
+                Value::Integer(-2),
+            ],
+        )
+        .unwrap(),
+        vec![Value::Integer(0x1234), Value::Integer(5)],
+    );
+}
+
+#[test]
+fn unpack_reports_short_data_unfinished_strings_and_invalid_positions() {
+    let mut state = installed_state();
+    let cases = [
+        (
+            vec![string("i4"), string([0, 0, 0])],
+            "bad argument #2 to 'unpack' (data string too short)",
+        ),
+        (
+            vec![string("z"), string("unterminated")],
+            "bad argument #2 to 'unpack' (unfinished string for format 'z')",
+        ),
+        (
+            vec![string("c0"), string("abc"), Value::Integer(5)],
+            "bad argument #3 to 'unpack' (initial position out of string)",
+        ),
+    ];
+
+    for (arguments, expected) in cases {
+        let error = call_unpack(&mut state, &arguments).unwrap_err();
+        assert_eq!(
+            error.kind,
+            VmErrorKind::NativeFunctionFailure {
+                message: expected.into(),
+            }
+        );
+        assert!(matches!(
+            error.frames.first(),
+            Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.unpack"
+        ));
+    }
 }

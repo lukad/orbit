@@ -34,6 +34,16 @@ pub(crate) fn number_has_no_integer_representation(
     ))
 }
 
+pub(crate) fn argument_error(
+    function: &'static str,
+    argument: usize,
+    message: impl std::fmt::Display,
+) -> VmError {
+    failure(format!(
+        "bad argument #{argument} to '{function}' ({message})"
+    ))
+}
+
 pub(crate) fn failure(message: impl Into<Box<str>>) -> VmError {
     VmErrorKind::NativeFunctionFailure {
         message: message.into(),
