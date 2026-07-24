@@ -1283,7 +1283,7 @@ mod tests {
     fn resolve_source(source: &str) -> Result<HirChunk, Vec<Diagnostic>> {
         let source_id = SourceId::new(0);
         let tokens = lex(source_id, source).expect("test source should lex");
-        let chunk = parse_chunk(source_id, &tokens).expect("test source should parse");
+        let chunk = parse_chunk(source_id, tokens).expect("test source should parse");
         resolve(&chunk)
     }
 

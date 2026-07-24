@@ -2659,7 +2659,7 @@ mod tests {
     fn compile_source_result(source: &str) -> Result<Chunk, CompileError> {
         let source_id = SourceId::new(0);
         let tokens = lex(source_id, source).unwrap();
-        let ast = parse_chunk(source_id, &tokens).unwrap();
+        let ast = parse_chunk(source_id, tokens).unwrap();
         let hir = orbit_resolver::resolve(&ast).unwrap();
         compile(hir)
     }

@@ -75,7 +75,7 @@ impl LoadService for Loader {
 
 fn compile_source(source_id: SourceId, source: &str) -> Result<Chunk, LoadError> {
     let tokens = orbit_parser::lexer::lex(source_id, source).map_err(LoadError::Lex)?;
-    let ast = orbit_parser::parser::parse_chunk(source_id, &tokens).map_err(LoadError::Parse)?;
+    let ast = orbit_parser::parser::parse_chunk(source_id, tokens).map_err(LoadError::Parse)?;
 
     let hir = orbit_resolver::resolve(&ast).map_err(|diagnostics| LoadError::Resolve {
         diagnostics: diagnostics.into_boxed_slice(),

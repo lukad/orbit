@@ -25,7 +25,7 @@ const SET_ACTION: NativeToken = NativeToken::new(5);
 fn compile_source(source: &str) -> Chunk {
     let source_id = SourceId::new(0);
     let tokens = lex(source_id, source).unwrap();
-    let ast = parse_chunk(source_id, &tokens).unwrap();
+    let ast = parse_chunk(source_id, tokens).unwrap();
     let hir = orbit_resolver::resolve(&ast).unwrap();
 
     orbit_compiler::compile(hir).unwrap()

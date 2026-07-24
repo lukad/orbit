@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use orbit_common::{SourceId, Span, Spanned, number::Number};
 use strum::IntoDiscriminant;
 
@@ -42,22 +44,23 @@ pub enum ParseErrorKind {
 
 pub type ParseResult<T> = Result<T, ParseError>;
 
-pub fn parse_chunk(source_id: SourceId, tokens: &[Spanned<Token>]) -> ParseResult<Chunk> {
+pub fn parse_chunk(source_id: SourceId, tokens: Vec<Spanned<Token>>) -> ParseResult<Chunk> {
     Parser::new(source_id, tokens).parse_chunk()
 }
 
-struct Parser<'tokens> {
-    tokens: &'tokens [Spanned<Token>],
+struct Parser {
+    tokens: VecDeque<Spanned<Token>>,
     source_id: SourceId,
-    position: usize,
+    source_end: u32,
 }
 
-impl<'tokens> Parser<'tokens> {
-    fn new(source_id: SourceId, tokens: &'tokens [Spanned<Token>]) -> Self {
+impl Parser {
+    fn new(source_id: SourceId, tokens: Vec<Spanned<Token>>) -> Self {
+        let source_end = tokens.last().map_or(0, |token| token.span.end);
         Self {
-            tokens,
+            tokens: tokens.into(),
             source_id,
-            position: 0,
+            source_end,
         }
     }
 
@@ -482,49 +485,63 @@ impl<'tokens> Parser<'tokens> {
 
     fn parse_atom(&mut self) -> ParseResult<Expr> {
         match self.kind() {
-            Some(TokenKind::Nil) => {
-                let token = self.advance().unwrap();
-                Ok(Expr::new(ExprKind::Nil, token.span))
-            }
-            Some(TokenKind::False) => {
-                let token = self.advance().unwrap();
-                Ok(Expr::new(ExprKind::Boolean(false), token.span))
-            }
-            Some(TokenKind::True) => {
-                let token = self.advance().unwrap();
-                Ok(Expr::new(ExprKind::Boolean(true), token.span))
-            }
-            Some(TokenKind::Number) => {
-                let token = self.advance().unwrap();
-                let Token::Number(value) = token.value else {
-                    unreachable!()
-                };
-                let value = match value {
+            Some(TokenKind::LeftBrace) => return self.parse_table(),
+            Some(TokenKind::Name | TokenKind::LeftParen) => return self.parse_prefix_expr(),
+            _ => {}
+        }
+
+        let Some(token) = self.advance() else {
+            return Err(self.error(ParseErrorKind::ExpectedExpression { actual: None }));
+        };
+
+        match token {
+            Spanned {
+                value: Token::Nil,
+                span,
+            } => Ok(Expr::new(ExprKind::Nil, span)),
+            Spanned {
+                value: Token::False,
+                span,
+            } => Ok(Expr::new(ExprKind::Boolean(false), span)),
+            Spanned {
+                value: Token::True,
+                span,
+            } => Ok(Expr::new(ExprKind::Boolean(true), span)),
+            Spanned {
+                value: Token::Number(value),
+                span,
+            } => {
+                let kind = match value {
                     Number::Integer(value) => ExprKind::Integer(value),
                     Number::Float(value) => ExprKind::Float(value),
                 };
-                Ok(Expr::new(value, token.span))
+                Ok(Expr::new(kind, span))
             }
-            Some(TokenKind::String) => {
-                let token = self.advance().unwrap();
-                let Token::String(value) = token.value else {
-                    unreachable!()
-                };
-                Ok(Expr::new(ExprKind::String(value), token.span))
-            }
-            Some(TokenKind::Ellipsis) => {
-                let token = self.advance().unwrap();
-                Ok(Expr::new(ExprKind::Vararg, token.span))
-            }
-            Some(TokenKind::Function) => {
-                let start = self.advance().unwrap().span;
+            Spanned {
+                value: Token::String(value),
+                span,
+            } => Ok(Expr::new(ExprKind::String(value), span)),
+            Spanned {
+                value: Token::Ellipsis,
+                span,
+            } => Ok(Expr::new(ExprKind::Vararg, span)),
+            Spanned {
+                value: Token::Function,
+                span,
+            } => {
                 let body = self.parse_function_body()?;
-                let span = start.join(&body.span);
-                Ok(Expr::new(ExprKind::Function(Box::new(body)), span))
+                let expression_span = span.join(&body.span);
+                Ok(Expr::new(
+                    ExprKind::Function(Box::new(body)),
+                    expression_span,
+                ))
             }
-            Some(TokenKind::LeftBrace) => self.parse_table(),
-            Some(TokenKind::Name | TokenKind::LeftParen) => self.parse_prefix_expr(),
-            actual => Err(self.error(ParseErrorKind::ExpectedExpression { actual })),
+            Spanned { value, span } => Err(self.error_at(
+                ParseErrorKind::ExpectedExpression {
+                    actual: Some(value.discriminant()),
+                },
+                span,
+            )),
         }
     }
 
@@ -738,7 +755,7 @@ impl<'tokens> Parser<'tokens> {
     }
 
     fn current(&self) -> Option<&Spanned<Token>> {
-        self.tokens.get(self.position)
+        self.tokens.front()
     }
 
     fn kind(&self) -> Option<TokenKind> {
@@ -747,7 +764,7 @@ impl<'tokens> Parser<'tokens> {
 
     fn nth_kind(&self, offset: usize) -> Option<TokenKind> {
         self.tokens
-            .get(self.position + offset)
+            .get(offset)
             .map(|token| token.value.discriminant())
     }
 
@@ -764,9 +781,7 @@ impl<'tokens> Parser<'tokens> {
     }
 
     fn advance(&mut self) -> Option<Spanned<Token>> {
-        let token = self.current()?.clone();
-        self.position += 1;
-        Some(token)
+        self.tokens.pop_front()
     }
 
     fn eat(&mut self, kind: TokenKind) -> Option<Spanned<Token>> {
@@ -782,14 +797,26 @@ impl<'tokens> Parser<'tokens> {
     }
 
     fn expect_name(&mut self) -> ParseResult<Spanned<Symbol>> {
-        let token = self.expect(TokenKind::Name)?;
-        let Token::Name(value) = token.value else {
-            unreachable!()
-        };
-        Ok(Spanned {
-            value,
-            span: token.span,
-        })
+        match self.advance() {
+            Some(Spanned {
+                value: Token::Name(value),
+                span,
+            }) => Ok(Spanned { value, span }),
+            Some(Spanned { value, span }) => Err(self.error_at(
+                ParseErrorKind::ExpectedToken {
+                    expected: TokenKind::Name,
+                    actual: Some(value.discriminant()),
+                },
+                span,
+            )),
+            None => Err(self.error_at(
+                ParseErrorKind::ExpectedToken {
+                    expected: TokenKind::Name,
+                    actual: None,
+                },
+                self.eof_span(),
+            )),
+        }
     }
 
     fn expected(&self, expected: TokenKind) -> ParseError {
@@ -814,8 +841,7 @@ impl<'tokens> Parser<'tokens> {
     }
 
     fn eof_span(&self) -> Span {
-        let end = self.tokens.last().map_or(0, |token| token.span.end);
-        Span::new(self.source_id, end, end)
+        Span::new(self.source_id, self.source_end, self.source_end)
     }
 }
 
@@ -828,7 +854,7 @@ mod tests {
 
     fn parse(source: &str) -> Chunk {
         let tokens = lex(SOURCE_ID, source).expect("source should lex");
-        parse_chunk(SOURCE_ID, &tokens).expect("source should parse")
+        parse_chunk(SOURCE_ID, tokens).expect("source should parse")
     }
 
     #[test]
@@ -1020,7 +1046,7 @@ mod tests {
     #[test]
     fn rejects_non_terminal_returns() {
         let tokens = lex(SOURCE_ID, "return 1 local x = 2").unwrap();
-        let error = parse_chunk(SOURCE_ID, &tokens).unwrap_err();
+        let error = parse_chunk(SOURCE_ID, tokens).unwrap_err();
 
         assert_eq!(error.kind, ParseErrorKind::StatementAfterReturn);
         assert_eq!(error.span.start, 9);
@@ -1033,7 +1059,7 @@ mod tests {
             ("f() = 1", ParseErrorKind::InvalidAssignmentTarget),
         ] {
             let tokens = lex(SOURCE_ID, source).unwrap();
-            assert_eq!(parse_chunk(SOURCE_ID, &tokens).unwrap_err().kind, expected);
+            assert_eq!(parse_chunk(SOURCE_ID, tokens).unwrap_err().kind, expected);
         }
     }
 }

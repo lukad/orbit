@@ -239,7 +239,7 @@ mod tests {
 
     fn compile_source(source_id: SourceId, source: &str) -> Chunk {
         let tokens = lex(source_id, source).unwrap();
-        let ast = parse_chunk(source_id, &tokens).unwrap();
+        let ast = parse_chunk(source_id, tokens).unwrap();
         let hir = orbit_resolver::resolve(&ast).unwrap();
 
         orbit_compiler::compile(hir).unwrap()
