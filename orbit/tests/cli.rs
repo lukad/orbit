@@ -121,6 +121,28 @@ fn repl_tracebacks_name_declared_functions_and_main_chunks() {
 }
 
 #[test]
+fn deep_tracebacks_collapse_their_middle_frames() {
+    let script = Script::new(
+        "local function descend(depth)\n\
+         if depth == 0 then return 1 + true end\n\
+         return 1 + descend(depth - 1)\n\
+         end\n\
+         return descend(40)\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orbit"))
+        .arg(&script.0)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("\t...\t(skipping 20 levels)"), "{stderr}");
+    assert_eq!(stderr.matches("in function 'descend'").count(), 21);
+}
+
+#[test]
 fn repl_continues_an_unterminated_string_with_an_escaped_newline() {
     let output = run_repl("print(\"hello\\\nfrom a short string\")\n");
 

@@ -138,32 +138,46 @@ pub(crate) fn print_runtime_error(error: &VmError, sources: &SourceMap) {
 
     eprintln!("stack traceback:");
 
-    for frame in &error.frames {
-        match frame {
-            VmTraceFrame::Lua {
-                function,
-                function_span,
-                pc,
-                instruction_span,
-            } => {
-                let span = instruction_span.unwrap_or(*function_span);
+    let (head, skipped, tail) = error.traceback_sections();
 
-                if let Some(source) = sources.get(span.source) {
-                    let (line, column) = line_column(&source.text, span.start);
-                    eprintln!("\t{}:{line}:{column} (pc {pc}): {function}", source.name);
-                } else {
-                    eprintln!(
-                        "\t[source {} bytes {}..{}, pc {}]: {function}",
-                        span.source.get(),
-                        span.start,
-                        span.end,
-                        pc,
-                    );
-                }
+    for frame in head {
+        print_trace_frame(frame, sources);
+    }
+
+    if skipped > 0 {
+        eprintln!("\t...\t(skipping {skipped} levels)");
+    }
+
+    for frame in tail {
+        print_trace_frame(frame, sources);
+    }
+}
+
+fn print_trace_frame(frame: &VmTraceFrame, sources: &SourceMap) {
+    match frame {
+        VmTraceFrame::Lua {
+            function,
+            function_span,
+            pc,
+            instruction_span,
+        } => {
+            let span = instruction_span.unwrap_or(*function_span);
+
+            if let Some(source) = sources.get(span.source) {
+                let (line, column) = line_column(&source.text, span.start);
+                eprintln!("\t{}:{line}:{column} (pc {pc}): {function}", source.name);
+            } else {
+                eprintln!(
+                    "\t[source {} bytes {}..{}, pc {}]: {function}",
+                    span.source.get(),
+                    span.start,
+                    span.end,
+                    pc,
+                );
             }
-            VmTraceFrame::Native { name } => {
-                eprintln!("\t[C]: in function '{name}'");
-            }
+        }
+        VmTraceFrame::Native { name } => {
+            eprintln!("\t[C]: in function '{name}'");
         }
     }
 }

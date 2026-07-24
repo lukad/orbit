@@ -168,6 +168,9 @@ impl From<LoadError> for VmErrorKind {
 
 pub(crate) type FaultResult<T> = Result<T, VmErrorKind>;
 
+const TRACEBACK_HEAD_LEVELS: usize = 10;
+const TRACEBACK_TAIL_LEVELS: usize = 11;
+
 /// Describes how a Lua frame should be identified in a traceback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LuaTraceFunction {
@@ -243,6 +246,25 @@ impl VmError {
         self.frames = combined.into_boxed_slice();
     }
 
+    /// Splits a traceback into the leading and trailing frames that should be
+    /// displayed, returning the number of frames omitted between them.
+    ///
+    /// Short tracebacks are returned entirely in the leading section with an
+    /// empty trailing section and an omitted count of zero.
+    pub fn traceback_sections(&self) -> (&[VmTraceFrame], usize, &[VmTraceFrame]) {
+        if self.frames.len() <= TRACEBACK_HEAD_LEVELS + TRACEBACK_TAIL_LEVELS {
+            return (&self.frames, 0, &[]);
+        }
+
+        let tail_start = self.frames.len() - TRACEBACK_TAIL_LEVELS;
+
+        (
+            &self.frames[..TRACEBACK_HEAD_LEVELS],
+            tail_start - TRACEBACK_HEAD_LEVELS,
+            &self.frames[tail_start..],
+        )
+    }
+
     pub fn object(&self) -> Option<&Value> {
         self.object.as_ref()
     }
@@ -276,28 +298,18 @@ impl std::fmt::Display for VmError {
 
         write!(formatter, "\nstack traceback:")?;
 
-        for frame in &self.frames {
-            match frame {
-                VmTraceFrame::Lua {
-                    function,
-                    function_span,
-                    pc,
-                    instruction_span,
-                } => {
-                    let span = instruction_span.unwrap_or(*function_span);
-                    write!(
-                        formatter,
-                        "\n\t[source {} bytes {}..{}, pc {}]: {function}",
-                        span.source.get(),
-                        span.start,
-                        span.end,
-                        pc
-                    )?;
-                }
-                VmTraceFrame::Native { name } => {
-                    write!(formatter, "\n\t[C]: in function '{name}'")?;
-                }
-            }
+        let (head, skipped, tail) = self.traceback_sections();
+
+        for frame in head {
+            write_trace_frame(formatter, frame)?;
+        }
+
+        if skipped > 0 {
+            write!(formatter, "\n\t...\t(skipping {skipped} levels)")?;
+        }
+
+        for frame in tail {
+            write_trace_frame(formatter, frame)?;
         }
 
         Ok(())
@@ -311,3 +323,83 @@ impl std::error::Error for VmError {
 }
 
 pub type VmResult<T> = Result<T, VmError>;
+
+fn write_trace_frame(
+    formatter: &mut std::fmt::Formatter<'_>,
+    frame: &VmTraceFrame,
+) -> std::fmt::Result {
+    match frame {
+        VmTraceFrame::Lua {
+            function,
+            function_span,
+            pc,
+            instruction_span,
+        } => {
+            let span = instruction_span.unwrap_or(*function_span);
+            write!(
+                formatter,
+                "\n\t[source {} bytes {}..{}, pc {}]: {function}",
+                span.source.get(),
+                span.start,
+                span.end,
+                pc
+            )
+        }
+        VmTraceFrame::Native { name } => {
+            write!(formatter, "\n\t[C]: in function '{name}'")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use orbit_common::{SourceId, Span};
+
+    use super::{LuaTraceFunction, VmError, VmErrorKind, VmTraceFrame};
+
+    fn lua_frames(count: usize) -> Box<[VmTraceFrame]> {
+        let span = Span::new(SourceId::new(0), 0, 1);
+
+        (0..count)
+            .map(|pc| VmTraceFrame::Lua {
+                function: LuaTraceFunction::MainChunk,
+                function_span: span,
+                pc,
+                instruction_span: Some(span),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
+
+    #[test]
+    fn traceback_sections_keep_short_traces_whole() {
+        let error = VmError::with_frames(
+            VmErrorKind::ProgramCounterOutOfBounds { pc: 0 },
+            lua_frames(21),
+        );
+
+        let (head, skipped, tail) = error.traceback_sections();
+
+        assert_eq!(head, error.frames.as_ref());
+        assert_eq!(skipped, 0);
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn traceback_sections_keep_ten_head_and_eleven_tail_levels() {
+        let error = VmError::with_frames(
+            VmErrorKind::ProgramCounterOutOfBounds { pc: 0 },
+            lua_frames(30),
+        );
+
+        let (head, skipped, tail) = error.traceback_sections();
+
+        assert_eq!(head, &error.frames[..10]);
+        assert_eq!(skipped, 9);
+        assert_eq!(tail, &error.frames[19..]);
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("\n\t...\t(skipping 9 levels)"));
+        assert_eq!(rendered.matches("\n\t[source").count(), 21);
+    }
+}
