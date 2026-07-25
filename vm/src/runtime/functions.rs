@@ -175,7 +175,7 @@ impl Runtime {
     }
 
     pub(crate) fn function_snapshot(&self, function: FunctionId) -> FaultResult<FunctionSnapshot> {
-        Ok(self.heap.function(function)?.snapshot())
+        Ok(self.heap.function(function)?.snapshot(function))
     }
 
     pub(crate) fn allocate_upvalue(&mut self, value: RawValue) -> FaultResult<UpvalueId> {

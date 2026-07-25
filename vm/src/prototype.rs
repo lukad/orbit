@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use orbit_common::Span;
 use orbit_compiler::bytecode::{
     Chunk, Constant, ConstantIndex, Instruction, Prototype, PrototypeIndex, Register,
@@ -26,7 +28,7 @@ impl RuntimePrototypeIndex {
 
 #[derive(Debug)]
 pub(crate) struct PrototypeBundle {
-    prototypes: Box<[RuntimePrototype]>,
+    prototypes: Box<[Rc<RuntimePrototype>]>,
 }
 
 impl PrototypeBundle {
@@ -48,7 +50,10 @@ impl PrototypeBundle {
         let prototypes = prototypes
             .into_iter()
             .map(|prototype| {
-                prototype.expect("every reserved prototype slot is filled before loading succeeds")
+                Rc::new(
+                    prototype
+                        .expect("every reserved prototype slot is filled before loading succeeds"),
+                )
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
@@ -61,7 +66,14 @@ impl PrototypeBundle {
     }
 
     pub(crate) fn prototype(&self, index: RuntimePrototypeIndex) -> Option<&RuntimePrototype> {
-        self.prototypes.get(index.get())
+        self.prototypes.get(index.get()).map(Rc::as_ref)
+    }
+
+    pub(crate) fn prototype_handle(
+        &self,
+        index: RuntimePrototypeIndex,
+    ) -> Option<Rc<RuntimePrototype>> {
+        self.prototypes.get(index.get()).cloned()
     }
 }
 

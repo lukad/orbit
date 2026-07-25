@@ -195,7 +195,7 @@ fn runtime_errors_fail_and_include_a_source_diagnostic() {
     assert!(stderr.contains("attempt to add a number value and a boolean value"));
     assert!(stderr.contains(&script.0.display().to_string()));
     assert!(stderr.contains("return 1 + true"));
-    assert!(stderr.contains(":1:8 (pc 2)"));
+    assert!(stderr.contains(":1:8 (pc 1)"));
 }
 
 #[test]

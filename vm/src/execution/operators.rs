@@ -1,4 +1,4 @@
-use orbit_compiler::bytecode::{BinaryOp, Register, UnaryOp};
+use orbit_compiler::bytecode::{BinaryOp, ImmediateOperandSide, Register, UnaryOp};
 
 use crate::{error::FaultResult, semantics, value::RawValue};
 
@@ -13,6 +13,24 @@ pub(crate) enum ComparisonOutcome {
 }
 
 impl Execution<'_> {
+    pub(super) fn binary_small_integer(
+        &mut self,
+        operation: BinaryOp,
+        destination: Register,
+        register: Register,
+        immediate: i16,
+        side: ImmediateOperandSide,
+    ) -> FaultResult<Option<FrameBoundary>> {
+        let register = self.read_register(register)?;
+        let immediate = RawValue::Integer(i64::from(immediate));
+        let (left, right) = match side {
+            ImmediateOperandSide::Left => (immediate, register),
+            ImmediateOperandSide::Right => (register, immediate),
+        };
+
+        self.binary_values(operation, destination, left, right)
+    }
+
     pub(super) fn unary(
         &mut self,
         operation: UnaryOp,
@@ -69,6 +87,29 @@ impl Execution<'_> {
     ) -> FaultResult<Option<FrameBoundary>> {
         let left = self.read_register(left)?;
         let right = self.read_register(right)?;
+
+        self.binary_values(operation, destination, left, right)
+    }
+
+    fn binary_values(
+        &mut self,
+        operation: BinaryOp,
+        destination: Register,
+        left: RawValue,
+        right: RawValue,
+    ) -> FaultResult<Option<FrameBoundary>> {
+        if let (RawValue::Integer(left), RawValue::Integer(right)) = (&left, &right) {
+            let result = match operation {
+                BinaryOp::Subtract => Some(RawValue::Integer(left.wrapping_sub(*right))),
+                BinaryOp::Equal => Some(RawValue::Boolean(left == right)),
+                _ => None,
+            };
+
+            if let Some(result) = result {
+                self.write_register(destination, result)?;
+                return Ok(None);
+            }
+        }
 
         if matches!(
             operation,

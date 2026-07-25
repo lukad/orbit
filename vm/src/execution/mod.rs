@@ -35,6 +35,7 @@ use self::native::NativeStep;
 pub(crate) struct Execution<'runtime> {
     runtime: &'runtime mut Runtime,
     stack: Vec<Activation>,
+    tail_arguments: Vec<RawValue>,
 }
 
 impl<'runtime> Execution<'runtime> {
@@ -148,7 +149,11 @@ impl<'runtime> Execution<'runtime> {
 
         stack.push(activation);
 
-        Ok(Self { runtime, stack })
+        Ok(Self {
+            runtime,
+            stack,
+            tail_arguments: Vec::new(),
+        })
     }
 
     pub(crate) fn run(mut self) -> VmResult<ExecutionOutcome<'runtime>> {
@@ -300,7 +305,7 @@ impl<'runtime> Execution<'runtime> {
     fn replace_callable(
         &mut self,
         callee: RawValue,
-        arguments: Box<[RawValue]>,
+        mut arguments: Vec<RawValue>,
     ) -> FaultResult<()> {
         let return_to = self
             .stack
@@ -308,17 +313,73 @@ impl<'runtime> Execution<'runtime> {
             .expect("tail caller is active")
             .return_to();
 
-        let replacement = self.build_callable_activation(callee, arguments, return_to)?;
-        let active = self.stack.last_mut().expect("tail caller is active");
+        let function = match self.resolve_callable_vec(callee, &mut arguments) {
+            Ok(function) => function,
+            Err(error) => {
+                arguments.clear();
+                self.tail_arguments = arguments;
+                return Err(error);
+            }
+        };
 
-        debug_assert!(
-            active.as_lua().is_some(),
-            "only Lua activations execute TailCall"
-        );
+        let is_same_lua_function = self
+            .stack
+            .last()
+            .and_then(Activation::as_lua)
+            .is_some_and(|activation| activation.frame().function() == function);
 
-        *active = replacement;
+        if is_same_lua_function {
+            let result = self
+                .stack
+                .last_mut()
+                .and_then(Activation::as_lua_mut)
+                .expect("tail caller is Lua")
+                .frame_mut()
+                .restart(&arguments);
 
-        Ok(())
+            arguments.clear();
+            self.tail_arguments = arguments;
+            return result;
+        }
+
+        let snapshot = match self.runtime.function_snapshot(function) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                arguments.clear();
+                self.tail_arguments = arguments;
+                return Err(error);
+            }
+        };
+
+        match snapshot {
+            FunctionSnapshot::Lua(invocation) => {
+                let active = self.stack.last_mut().expect("tail caller is active");
+
+                debug_assert!(
+                    active.as_lua().is_some(),
+                    "only Lua activations execute TailCall"
+                );
+
+                let result = active
+                    .as_lua_mut()
+                    .expect("tail caller is Lua")
+                    .frame_mut()
+                    .replace(invocation, &arguments);
+
+                arguments.clear();
+                self.tail_arguments = arguments;
+                result
+            }
+            FunctionSnapshot::Native(invocation) => {
+                let arguments = arguments.into_boxed_slice();
+                let active = self.stack.last_mut().expect("tail caller is active");
+                *active = Activation::Native(match return_to {
+                    Some(target) => NativeActivation::called(invocation, arguments, target),
+                    None => NativeActivation::entry(invocation, arguments),
+                });
+                Ok(())
+            }
+        }
     }
 
     fn deliver_return(
@@ -368,7 +429,8 @@ impl<'runtime> Execution<'runtime> {
         });
 
         let Some(boundary) = boundary else {
-            error.append_frames(self.stack.iter().rev().map(Activation::trace_frame));
+            let (frames, omitted) = Self::trace_frames(&self.stack);
+            error.append_trace(frames, omitted);
 
             return Err(error);
         };
@@ -383,12 +445,8 @@ impl<'runtime> Execution<'runtime> {
             }
         };
 
-        error.append_frames(
-            self.stack[boundary..]
-                .iter()
-                .rev()
-                .map(Activation::trace_frame),
-        );
+        let (frames, omitted) = Self::trace_frames(&self.stack[boundary..]);
+        error.append_trace(frames, omitted);
 
         self.stack.truncate(boundary);
 
@@ -404,7 +462,8 @@ impl<'runtime> Execution<'runtime> {
         if let Err(kind) = result {
             let mut invariant = VmError::from(kind);
 
-            invariant.append_frames(self.stack.iter().rev().map(Activation::trace_frame));
+            let (frames, omitted) = Self::trace_frames(&self.stack);
+            invariant.append_trace(frames, omitted);
 
             return Err(invariant);
         }
@@ -452,17 +511,39 @@ impl<'runtime> Execution<'runtime> {
         self.active_lua_frame_mut().apply_jump(offset)
     }
 
-    fn trace_frames(&self) -> Box<[VmTraceFrame]> {
-        self.stack
+    fn trace_frames(activations: &[Activation]) -> (Box<[VmTraceFrame]>, usize) {
+        const HEAD: usize = 10;
+        const TAIL: usize = 11;
+
+        if activations.len() <= HEAD + TAIL {
+            return (
+                activations
+                    .iter()
+                    .rev()
+                    .map(Activation::trace_frame)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+                0,
+            );
+        }
+
+        let frames = activations
             .iter()
             .rev()
+            .take(HEAD)
+            .chain(activations.iter().take(TAIL).rev())
             .map(Activation::trace_frame)
             .collect::<Vec<_>>()
-            .into_boxed_slice()
+            .into_boxed_slice();
+
+        (frames, activations.len() - HEAD - TAIL)
     }
 
     fn runtime_error(&self, kind: VmErrorKind) -> VmError {
-        VmError::with_frames(kind, self.trace_frames())
+        let (frames, omitted) = Self::trace_frames(&self.stack);
+        let mut error = VmError::new(kind);
+        error.append_trace(frames, omitted);
+        error
     }
 
     fn collect_if_due(&mut self) -> FaultResult<()> {

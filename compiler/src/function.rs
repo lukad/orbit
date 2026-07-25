@@ -9,8 +9,9 @@ use orbit_resolver::hir::{
 
 use crate::{
     bytecode::{
-        BinaryOp as BytecodeBinaryOp, Count, Instruction, Prototype, PrototypeIndex, Register,
-        StringIndex, UnaryOp as BytecodeUnaryOp, UpvalueDescriptor, UpvalueIndex,
+        BinaryOp as BytecodeBinaryOp, Count, ImmediateOperandSide, Instruction, Prototype,
+        PrototypeIndex, Register, StringIndex, UnaryOp as BytecodeUnaryOp, UpvalueDescriptor,
+        UpvalueIndex,
     },
     constants::{ConstantKey, ConstantPoolBuilder},
     emitter::{CodeLabel, Emitter},
@@ -834,15 +835,7 @@ impl<'hir> FunctionCompiler<'hir> {
 
         for (index, branch) in branches.iter().copied().enumerate() {
             let next = self.emitter.new_label();
-            let condition_span = self.function.expressions[branch.condition].span;
-            let mark = self.registers.temporary_mark();
-
-            let condition = self.registers.reserve_temporaries(1, condition_span)?.base;
-
-            self.emit_one(branch.condition, condition)?;
-            self.emitter
-                .jump_if_falsy(condition_span, condition, next)?;
-            self.registers.release_temporaries_to(mark);
+            self.emit_condition_jump_if_falsy(branch.condition, next)?;
 
             let body_falls_through = self.emit_scoped_block(branch.body)?;
             any_branch_falls_through |= body_falls_through;
@@ -881,6 +874,55 @@ impl<'hir> FunctionCompiler<'hir> {
         );
 
         Ok(any_branch_falls_through || fallback_falls_through)
+    }
+
+    fn emit_condition_jump_if_falsy(
+        &mut self,
+        condition: ExprId,
+        target: CodeLabel,
+    ) -> Result<(), CompileError> {
+        let condition_span = self.function.expressions[condition].span;
+
+        if let HirExprKind::Binary {
+            left,
+            operator: BinaryOperator::Equal,
+            right,
+        } = &self.function.expressions[condition].kind
+        {
+            let immediate = self
+                .small_integer_expression(*right)
+                .map(|value| (*left, value, ImmediateOperandSide::Right))
+                .or_else(|| {
+                    self.small_integer_expression(*left)
+                        .map(|value| (*right, value, ImmediateOperandSide::Left))
+                });
+
+            if let Some((register_source, immediate, side)) = immediate {
+                let mark = self.registers.temporary_mark();
+                let register = self.registers.reserve_temporaries(1, condition_span)?.base;
+
+                self.emit_one(register_source, register)?;
+                self.emitter.jump_if_not_equal_small_int(
+                    condition_span,
+                    register,
+                    immediate,
+                    side,
+                    target,
+                )?;
+                self.registers.release_temporaries_to(mark);
+                return Ok(());
+            }
+        }
+
+        let mark = self.registers.temporary_mark();
+        let condition_register = self.registers.reserve_temporaries(1, condition_span)?.base;
+
+        self.emit_one(condition, condition_register)?;
+        self.emitter
+            .jump_if_falsy(condition_span, condition_register, target)?;
+        self.registers.release_temporaries_to(mark);
+
+        Ok(())
     }
 
     fn activate_loop(
@@ -987,14 +1029,7 @@ impl<'hir> FunctionCompiler<'hir> {
 
         self.emitter.bind(condition_label);
 
-        let condition_span = self.function.expressions[condition].span;
-        let mark = self.registers.temporary_mark();
-        let condition_register = self.registers.reserve_temporaries(1, condition_span)?.base;
-
-        self.emit_one(condition, condition_register)?;
-        self.emitter
-            .jump_if_falsy(condition_span, condition_register, break_label)?;
-        self.registers.release_temporaries_to(mark);
+        self.emit_condition_jump_if_falsy(condition, break_label)?;
 
         self.activate_loop(loop_id, break_label, body_scope, None);
         let body_falls_through = self.emit_scoped_block(body)?;
@@ -1041,12 +1076,6 @@ impl<'hir> FunctionCompiler<'hir> {
         let body_falls_through = self.emit_block_stmts(body)?;
 
         if body_falls_through {
-            let condition_span = self.function.expressions[condition].span;
-            let mark = self.registers.temporary_mark();
-            let condition_register = self.registers.reserve_temporaries(1, condition_span)?.base;
-
-            self.emit_one(condition, condition_register)?;
-
             let scope = *self
                 .scopes
                 .last()
@@ -1057,9 +1086,7 @@ impl<'hir> FunctionCompiler<'hir> {
             if self.scope_requires_close(body_scope) {
                 let continue_label = self.emitter.new_label();
 
-                self.emitter
-                    .jump_if_falsy(condition_span, condition_register, continue_label)?;
-                self.registers.release_temporaries_to(mark);
+                self.emit_condition_jump_if_falsy(condition, continue_label)?;
 
                 let close_base = scope.register_base.to_bytecode(span)?;
 
@@ -1072,9 +1099,7 @@ impl<'hir> FunctionCompiler<'hir> {
                     .emit(span, Instruction::CloseFrom { base: close_base })?;
                 self.emitter.jump(span, body_label)?;
             } else {
-                self.emitter
-                    .jump_if_falsy(condition_span, condition_register, body_label)?;
-                self.registers.release_temporaries_to(mark);
+                self.emit_condition_jump_if_falsy(condition, body_label)?;
             }
         }
 
@@ -2012,6 +2037,34 @@ impl<'hir> FunctionCompiler<'hir> {
         source_right: ExprId,
         op: BytecodeBinaryOp,
     ) -> Result<(), CompileError> {
+        let immediate = self
+            .small_integer_expression(source_right)
+            .map(|value| (source_left, value, ImmediateOperandSide::Right))
+            .or_else(|| {
+                self.small_integer_expression(source_left)
+                    .map(|value| (source_right, value, ImmediateOperandSide::Left))
+            });
+
+        if let Some((register_source, immediate, side)) = immediate {
+            let mark = self.registers.temporary_mark();
+            let register = self.registers.reserve_temporaries(1, span)?.base;
+
+            self.emit_one(register_source, register)?;
+            self.emitter.emit(
+                span,
+                Instruction::BinarySmallInt {
+                    op,
+                    dst: dst.to_bytecode(span)?,
+                    register: register.to_bytecode(span)?,
+                    immediate,
+                    side,
+                },
+            )?;
+
+            self.registers.release_temporaries_to(mark);
+            return Ok(());
+        }
+
         let mark = self.registers.temporary_mark();
         let [left_register, right_register] = self.registers.reserve_temporary_array(span)?;
 
@@ -2031,6 +2084,15 @@ impl<'hir> FunctionCompiler<'hir> {
         self.registers.release_temporaries_to(mark);
 
         Ok(())
+    }
+
+    fn small_integer_expression(&self, expression: ExprId) -> Option<i16> {
+        let (_, result) = self.result_expr(expression);
+        let ResultExpr::Single(SingleExpr::Integer(value)) = result else {
+            return None;
+        };
+
+        i16::try_from(value).ok()
     }
 
     fn emit_table_one(
@@ -2817,22 +2879,19 @@ mod tests {
         let source = format!("return 1 {operator} 2");
         let chunk = compile_source(&source);
 
-        assert_eq!(chunk.entry.max_registers, 3, "source: {source}");
+        assert_eq!(chunk.entry.max_registers, 2, "source: {source}");
 
         let [
             Instruction::LoadSmallInt {
                 dst: left_dst,
                 value: left_value,
             },
-            Instruction::LoadSmallInt {
-                dst: right_dst,
-                value: right_value,
-            },
-            Instruction::Binary {
+            Instruction::BinarySmallInt {
                 op,
                 dst,
-                left,
-                right,
+                register,
+                immediate,
+                side,
             },
             Instruction::Return { base, values, .. },
         ] = chunk.entry.code.as_ref()
@@ -2842,12 +2901,11 @@ mod tests {
 
         assert_eq!(*left_dst, Register(1), "source: {source}");
         assert_eq!(*left_value, 1, "source: {source}");
-        assert_eq!(*right_dst, Register(2), "source: {source}");
-        assert_eq!(*right_value, 2, "source: {source}");
         assert_eq!(*op, expected, "source: {source}");
         assert_eq!(*dst, Register(0), "source: {source}");
-        assert_eq!(*left, Register(1), "source: {source}");
-        assert_eq!(*right, Register(2), "source: {source}");
+        assert_eq!(*register, Register(1), "source: {source}");
+        assert_eq!(*immediate, 2, "source: {source}");
+        assert_eq!(*side, ImmediateOperandSide::Right, "source: {source}");
         assert_eq!(*base, Register(0), "source: {source}");
         assert_eq!(*values, Count::Fixed(1), "source: {source}");
     }
@@ -3205,26 +3263,85 @@ mod tests {
     }
 
     #[test]
+    fn folds_small_integer_right_operands_into_binary_instructions() {
+        let chunk = compile_source("local n = ...; return n - 1");
+
+        assert!(chunk.entry.code.iter().any(|instruction| matches!(
+            instruction,
+            Instruction::BinarySmallInt {
+                op: BytecodeBinaryOp::Subtract,
+                immediate: 1,
+                side: ImmediateOperandSide::Right,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn folds_small_integer_left_operands_without_reordering_them() {
+        let chunk = compile_source("local n = ...; return 1 - n");
+
+        assert!(chunk.entry.code.iter().any(|instruction| matches!(
+            instruction,
+            Instruction::BinarySmallInt {
+                op: BytecodeBinaryOp::Subtract,
+                immediate: 1,
+                side: ImmediateOperandSide::Left,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn fuses_small_integer_equality_conditions_with_their_branch() {
+        for (source, side) in [
+            (
+                "local n = ...; if n == 0 then return true end return false",
+                ImmediateOperandSide::Right,
+            ),
+            (
+                "local n = ...; if 0 == n then return true end return false",
+                ImmediateOperandSide::Left,
+            ),
+        ] {
+            let chunk = compile_source(source);
+
+            assert!(chunk.entry.code.iter().any(|instruction| matches!(
+                instruction,
+                Instruction::JumpIfNotEqualSmallInt {
+                    immediate: 0,
+                    side: actual_side,
+                    ..
+                } if *actual_side == side
+            )));
+            assert!(!chunk.entry.code.iter().any(|instruction| matches!(
+                instruction,
+                Instruction::BinarySmallInt {
+                    op: BytecodeBinaryOp::Equal,
+                    ..
+                }
+            )));
+        }
+    }
+
+    #[test]
     fn compiles_not_equal() {
         let source = "return 1 ~= 2";
         let chunk = compile_source(source);
 
-        assert_eq!(chunk.entry.max_registers, 3);
+        assert_eq!(chunk.entry.max_registers, 2);
 
         let [
             Instruction::LoadSmallInt {
                 dst: Register(1),
                 value: 1,
             },
-            Instruction::LoadSmallInt {
-                dst: Register(2),
-                value: 2,
-            },
-            Instruction::Binary {
+            Instruction::BinarySmallInt {
                 op: BytecodeBinaryOp::Equal,
                 dst: Register(0),
-                left: Register(1),
-                right: Register(2),
+                register: Register(1),
+                immediate: 2,
+                side: ImmediateOperandSide::Right,
             },
             Instruction::Unary {
                 op: BytecodeUnaryOp::Not,
@@ -3288,48 +3405,22 @@ mod tests {
         let chunk = compile_source("return global_name[1 + 2]");
 
         assert_eq!(chunk.entry.max_registers, 5);
+        assert!(chunk.entry.code.iter().any(|instruction| matches!(
+            instruction,
+            Instruction::BinarySmallInt {
+                op: BytecodeBinaryOp::Add,
+                immediate: 2,
+                side: ImmediateOperandSide::Right,
+                ..
+            }
+        )));
         assert!(matches!(
-            chunk.entry.code.as_ref(),
-            [
-                Instruction::GetUpvalue {
-                    dst: Register(3),
-                    upvalue,
-                },
-                Instruction::LoadConst {
-                    dst: Register(4),
-                    constant,
-                },
-                Instruction::GetTable {
-                    dst: Register(1),
-                    table: Register(3),
-                    key: Register(4),
-                },
-                Instruction::LoadSmallInt {
-                    dst: Register(3),
-                    value: 1,
-                },
-                Instruction::LoadSmallInt {
-                    dst: Register(4),
-                    value: 2,
-                },
-                Instruction::Binary {
-                    op: BytecodeBinaryOp::Add,
-                    dst: Register(2),
-                    left: Register(3),
-                    right: Register(4),
-                },
-                Instruction::GetTable {
-                    dst: Register(0),
-                    table: Register(1),
-                    key: Register(2),
-                },
-                Instruction::Return {
-                    base: Register(0),
-                    values: Count::Fixed(1),
-                    ..
-                },
-            ] if *upvalue == UpvalueIndex::new(0)
-                && *constant == ConstantIndex::new(0)
+            chunk.entry.code.last(),
+            Some(Instruction::Return {
+                base: Register(0),
+                values: Count::Fixed(1),
+                ..
+            })
         ));
     }
 
@@ -4234,7 +4325,12 @@ mod tests {
 
         let rhs_add = code
             .iter()
-            .position(|instruction| matches!(instruction, Instruction::Binary { .. }))
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Binary { .. } | Instruction::BinarySmallInt { .. }
+                )
+            })
             .unwrap();
 
         let local_write = code
@@ -5146,7 +5242,7 @@ mod tests {
     fn repeat_condition_reads_body_locals_before_scope_exit() {
         let chunk = compile_source("repeat local visible = 1 until visible == 1");
 
-        assert_eq!(chunk.entry.max_registers, 4);
+        assert_eq!(chunk.entry.max_registers, 2);
         assert!(matches!(
             chunk.entry.code.as_ref(),
             [
@@ -5155,22 +5251,14 @@ mod tests {
                     value: 1,
                 },
                 Instruction::Move {
-                    dst: Register(2),
+                    dst: Register(1),
                     src: Register(0),
                 },
-                Instruction::LoadSmallInt {
-                    dst: Register(3),
-                    value: 1,
-                },
-                Instruction::Binary {
-                    op: BytecodeBinaryOp::Equal,
-                    dst: Register(1),
-                    left: Register(2),
-                    right: Register(3),
-                },
-                Instruction::JumpIfFalsy {
-                    condition: Register(1),
-                    offset: -5,
+                Instruction::JumpIfNotEqualSmallInt {
+                    register: Register(1),
+                    immediate: 1,
+                    side: ImmediateOperandSide::Right,
+                    offset: -3,
                 },
                 Instruction::Return {
                     base: Register(0),

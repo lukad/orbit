@@ -46,7 +46,8 @@ impl Execution<'_> {
         arguments: Count,
         close_from: Option<Register>,
     ) -> FaultResult<FrameBoundary> {
-        let (callee, arguments) = {
+        let mut collected = std::mem::take(&mut self.tail_arguments);
+        let collect_result = {
             let runtime = &*self.runtime;
 
             self.stack
@@ -54,21 +55,36 @@ impl Execution<'_> {
                 .and_then(Activation::as_lua_mut)
                 .expect("active activation is Lua")
                 .frame_mut()
-                .collect_call(runtime, base, arguments)?
+                .collect_call_into(runtime, base, arguments, &mut collected)
+        };
+        let callee = match collect_result {
+            Ok(callee) => callee,
+            Err(error) => {
+                self.tail_arguments = collected;
+                return Err(error);
+            }
         };
 
         if let Some(close_from) = close_from {
             let runtime = &*self.runtime;
 
-            self.stack
+            if let Err(error) = self
+                .stack
                 .last_mut()
                 .and_then(Activation::as_lua_mut)
                 .expect("active activation is Lua")
                 .frame_mut()
-                .close_upvalues_from(runtime, close_from)?;
+                .close_upvalues_from(runtime, close_from)
+            {
+                self.tail_arguments = collected;
+                return Err(error);
+            }
         }
 
-        Ok(FrameBoundary::TailInvoke { callee, arguments })
+        Ok(FrameBoundary::TailInvoke {
+            callee,
+            arguments: collected,
+        })
     }
 
     pub(super) fn resolve_callable(
@@ -132,6 +148,49 @@ impl Execution<'_> {
         }
 
         Ok((function, arguments))
+    }
+
+    pub(super) fn resolve_callable_vec(
+        &self,
+        mut callee: RawValue,
+        arguments: &mut Vec<RawValue>,
+    ) -> FaultResult<FunctionId> {
+        let mut redirects = 0;
+
+        loop {
+            if let RawValue::Function(function) = callee {
+                return Ok(function);
+            }
+
+            if redirects == MAX_CALL_REDIRECTS {
+                return Err(VmErrorKind::MetamethodChainTooLong {
+                    metamethod: "__call",
+                });
+            }
+
+            let metamethod = self.runtime.metamethod(&callee, CALL_METAMETHOD)?;
+
+            if metamethod.is_nil() {
+                return Err(VmErrorKind::InvalidCallOperand {
+                    kind: callee.type_name(),
+                });
+            }
+
+            let requested =
+                arguments
+                    .len()
+                    .checked_add(1)
+                    .ok_or(VmErrorKind::FrameCapacityExceeded {
+                        requested: usize::MAX,
+                    })?;
+            arguments
+                .try_reserve(1)
+                .map_err(|_| VmErrorKind::FrameCapacityExceeded { requested })?;
+            arguments.insert(0, callee);
+
+            callee = metamethod;
+            redirects += 1;
+        }
     }
 
     pub(super) fn return_values(

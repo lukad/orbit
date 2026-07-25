@@ -77,6 +77,19 @@ impl Execution<'_> {
                     return Ok(Some(boundary));
                 }
             }
+            Instruction::BinarySmallInt {
+                op,
+                dst,
+                register,
+                immediate,
+                side,
+            } => {
+                if let Some(boundary) =
+                    self.binary_small_integer(op, dst, register, immediate, side)?
+                {
+                    return Ok(Some(boundary));
+                }
+            }
             Instruction::MarkToClose { register } => {
                 self.mark_to_close(register)?;
             }
@@ -88,6 +101,14 @@ impl Execution<'_> {
             }
             Instruction::JumpIfFalsy { condition, offset } => {
                 self.jump_if_falsy(condition, offset)?;
+            }
+            Instruction::JumpIfNotEqualSmallInt {
+                register,
+                immediate,
+                side,
+                offset,
+            } => {
+                self.jump_if_not_equal_small_integer(register, immediate, side, offset)?;
             }
             Instruction::ForPrep { base, exit_offset } => {
                 self.for_prep(base, exit_offset)?;

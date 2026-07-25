@@ -82,15 +82,18 @@ pub struct SourceMapEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct Register(pub u8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Count {
     Fixed(u8),
     Open,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum UnaryOp {
     Negate,
     Not,
@@ -99,6 +102,7 @@ pub enum UnaryOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum BinaryOp {
     Add,
     Subtract,
@@ -120,7 +124,13 @@ pub enum BinaryOp {
     GreaterEqual,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImmediateOperandSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Instruction {
     LoadNil {
         dst: Register,
@@ -186,6 +196,16 @@ pub enum Instruction {
         left: Register,
         right: Register,
     },
+    /// Applies a binary operation with one small integer operand without first
+    /// materializing that operand in a register. `side` preserves the original
+    /// operand order for non-commutative operations and metamethod dispatch.
+    BinarySmallInt {
+        op: BinaryOp,
+        dst: Register,
+        register: Register,
+        immediate: i16,
+        side: ImmediateOperandSide,
+    },
     /// Instantiates `children[child]`, binds its upvalues in descriptor order,
     /// and writes the resulting closure to `dst`.
     Closure {
@@ -212,6 +232,14 @@ pub enum Instruction {
     /// `condition` contains nil or false; every other value falls through.
     JumpIfFalsy {
         condition: Register,
+        offset: i32,
+    },
+    /// Jumps when an equality comparison is false, with one small integer
+    /// operand embedded in the instruction.
+    JumpIfNotEqualSmallInt {
+        register: Register,
+        immediate: i16,
+        side: ImmediateOperandSide,
         offset: i32,
     },
     Call {

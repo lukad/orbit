@@ -1,5 +1,7 @@
 use orbit_common::{SourceId, Span};
-use orbit_compiler::bytecode::{BinaryOp, Chunk, Instruction, SourceMapEntry};
+use orbit_compiler::bytecode::{
+    BinaryOp, Chunk, ImmediateOperandSide, Instruction, SourceMapEntry,
+};
 use orbit_parser::{lexer::lex, parser::parse_chunk};
 
 use crate::{
@@ -435,6 +437,27 @@ fn concatenates_numbers_and_compares_mixed_numeric_values() {
             Value::Boolean(true),
             Value::Boolean(true),
         ],
+    );
+}
+
+#[test]
+fn fused_small_integer_equality_branches_preserve_lua_number_semantics() {
+    assert_execute(
+        r#"
+            local mixed = false
+            local different = false
+
+            if 0.0 == 0 then
+                mixed = true
+            end
+
+            if "0" == 0 then
+                different = true
+            end
+
+            return mixed, different
+        "#,
+        vec![Value::Boolean(true), Value::Boolean(false)],
     );
 }
 
@@ -975,6 +998,31 @@ fn deep_lua_calls_use_the_explicit_vm_stack() {
 }
 
 #[test]
+fn deep_runtime_errors_retain_only_bounded_traceback_sections() {
+    let error = execute_source(
+        r#"
+            local function descend(depth)
+                if depth == 0 then
+                    return 1 + true
+                end
+
+                return 1 + descend(depth - 1)
+            end
+
+            return descend(100)
+        "#,
+    )
+    .unwrap_err();
+
+    let (head, skipped, tail) = error.traceback_sections();
+
+    assert_eq!(error.frames.len(), 21);
+    assert_eq!(head.len(), 10);
+    assert_eq!(skipped, 80);
+    assert_eq!(tail.len(), 11);
+}
+
+#[test]
 fn runtime_errors_retain_exact_source_maps_across_chunks() {
     let mut state = State::new(NoLoadService).unwrap();
     let failing_source = "function failing()\n    return 1 + true\nend";
@@ -984,9 +1032,10 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
     {
         let defining_chunk = compile_source(SourceId::new(1), failing_source);
         assert!(matches!(
-            defining_chunk.entry.children[0].code[2],
-            Instruction::Binary {
+            defining_chunk.entry.children[0].code[1],
+            Instruction::BinarySmallInt {
                 op: BinaryOp::Add,
+                side: ImmediateOperandSide::Left,
                 ..
             }
         ));
@@ -1026,7 +1075,7 @@ fn runtime_errors_retain_exact_source_maps_across_chunks() {
         LuaTraceFunction::Named(name) if name.as_ref() == "failing"
     ));
     assert_eq!(function_span.source, SourceId::new(1));
-    assert_eq!(*pc, 2);
+    assert_eq!(*pc, 1);
     assert_eq!(
         *instruction_span,
         Some(source_span(SourceId::new(1), failing_source, "1 + true"))
@@ -2567,6 +2616,39 @@ fn arithmetic_metamethods_use_the_lua_54_names_and_operand_order() {
             string_value("__shl"),
             string_value("__shr"),
         ]
+    );
+}
+
+#[test]
+fn small_integer_left_operands_preserve_metamethod_operand_order() {
+    let mut state = State::new(NoLoadService).unwrap();
+    let right = state.create_table(0, 0).unwrap();
+    let metatable = state.create_table(0, 1).unwrap();
+
+    state
+        .set_global(b"right", &Value::Table(right.clone()))
+        .unwrap();
+
+    let subtract = returned_function(
+        &mut state,
+        SourceId::new(153),
+        "return function(first, second) return first == 7 and second == right end",
+    );
+
+    state
+        .raw_set(
+            &metatable,
+            &string_value("__sub"),
+            &Value::Function(subtract),
+        )
+        .unwrap();
+    state
+        .set_metatable(&Value::Table(right), Some(&metatable))
+        .unwrap();
+
+    assert_eq!(
+        execute_in_state(&mut state, SourceId::new(154), "return 7 - right").unwrap(),
+        vec![Value::Boolean(true)]
     );
 }
 

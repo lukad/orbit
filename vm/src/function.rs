@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::{
-    id::{ObjectId, UpvalueId},
+    id::{FunctionId, ObjectId, UpvalueId},
     native::NativeCallback,
     prototype::{PrototypeBundle, RuntimePrototypeIndex},
     value::RawValue,
@@ -22,7 +22,7 @@ impl FunctionData {
         Self::Lua(LuaClosureData {
             bundle,
             prototype,
-            upvalues,
+            upvalues: Rc::from(upvalues),
         })
     }
 
@@ -38,9 +38,10 @@ impl FunctionData {
         })
     }
 
-    pub(crate) fn snapshot(&self) -> FunctionSnapshot {
+    pub(crate) fn snapshot(&self, function_id: FunctionId) -> FunctionSnapshot {
         match self {
             Self::Lua(function) => FunctionSnapshot::Lua(LuaInvocation {
+                function: function_id,
                 bundle: Rc::clone(&function.bundle),
                 prototype: function.prototype,
                 upvalues: function.upvalues.clone(),
@@ -56,7 +57,7 @@ impl FunctionData {
     pub(crate) fn visit_objects(&self, mut visit: impl FnMut(ObjectId)) {
         match self {
             Self::Lua(function) => {
-                for upvalue in &function.upvalues {
+                for upvalue in function.upvalues.iter() {
                     visit(upvalue.object());
                 }
             }
@@ -75,7 +76,7 @@ impl FunctionData {
 pub(crate) struct LuaClosureData {
     bundle: Rc<PrototypeBundle>,
     prototype: RuntimePrototypeIndex,
-    upvalues: Box<[UpvalueId]>,
+    upvalues: Rc<[UpvalueId]>,
 }
 
 #[derive(Debug)]
@@ -93,16 +94,22 @@ pub(crate) enum FunctionSnapshot {
 
 #[derive(Clone)]
 pub(crate) struct LuaInvocation {
+    function: FunctionId,
     bundle: Rc<PrototypeBundle>,
     prototype: RuntimePrototypeIndex,
-    upvalues: Box<[UpvalueId]>,
+    upvalues: Rc<[UpvalueId]>,
 }
 
 impl LuaInvocation {
     pub(crate) fn into_parts(
         self,
-    ) -> (Rc<PrototypeBundle>, RuntimePrototypeIndex, Box<[UpvalueId]>) {
-        (self.bundle, self.prototype, self.upvalues)
+    ) -> (
+        FunctionId,
+        Rc<PrototypeBundle>,
+        RuntimePrototypeIndex,
+        Rc<[UpvalueId]>,
+    ) {
+        (self.function, self.bundle, self.prototype, self.upvalues)
     }
 }
 

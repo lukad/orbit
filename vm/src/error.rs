@@ -208,6 +208,7 @@ pub enum VmTraceFrame {
 pub struct VmError {
     pub kind: VmErrorKind,
     pub frames: Box<[VmTraceFrame]>,
+    omitted_frames: usize,
     object: Option<Value>,
     level: i64,
 }
@@ -217,6 +218,7 @@ impl VmError {
         Self {
             kind,
             frames: Box::new([]),
+            omitted_frames: 0,
             object: None,
             level: 0,
         }
@@ -226,24 +228,77 @@ impl VmError {
         Self {
             kind: VmErrorKind::Raised,
             frames: Box::new([]),
+            omitted_frames: 0,
             object: Some(object),
             level,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_frames(kind: VmErrorKind, frames: Box<[VmTraceFrame]>) -> Self {
-        Self {
-            kind,
-            frames,
-            object: None,
-            level: 0,
-        }
+        let mut error = Self::new(kind);
+        error.append_trace(frames, 0);
+        error
     }
 
+    #[cfg(test)]
     pub(crate) fn append_frames(&mut self, frames: impl IntoIterator<Item = VmTraceFrame>) {
-        let mut combined = Vec::from(std::mem::take(&mut self.frames));
-        combined.extend(frames);
-        self.frames = combined.into_boxed_slice();
+        self.append_trace(frames.into_iter().collect::<Vec<_>>().into_boxed_slice(), 0);
+    }
+
+    pub(crate) fn append_trace(&mut self, frames: Box<[VmTraceFrame]>, omitted: usize) {
+        let existing = std::mem::take(&mut self.frames);
+        let existing_omitted = self.omitted_frames;
+        let existing_len = existing.len().saturating_add(existing_omitted);
+        let appended_len = frames.len().saturating_add(omitted);
+        let total_len = existing_len.saturating_add(appended_len);
+
+        if total_len <= TRACEBACK_HEAD_LEVELS + TRACEBACK_TAIL_LEVELS {
+            debug_assert_eq!(existing_omitted, 0);
+            debug_assert_eq!(omitted, 0);
+
+            let mut combined = Vec::from(existing);
+            combined.extend(frames);
+            self.frames = combined.into_boxed_slice();
+            self.omitted_frames = 0;
+            return;
+        }
+
+        let mut retained = Vec::with_capacity(TRACEBACK_HEAD_LEVELS + TRACEBACK_TAIL_LEVELS);
+
+        let existing_head = existing_len.min(TRACEBACK_HEAD_LEVELS);
+        retained.extend(existing.iter().take(existing_head).cloned());
+
+        if existing_head < TRACEBACK_HEAD_LEVELS {
+            retained.extend(
+                frames
+                    .iter()
+                    .take(TRACEBACK_HEAD_LEVELS - existing_head)
+                    .cloned(),
+            );
+        }
+
+        let appended_tail = appended_len.min(TRACEBACK_TAIL_LEVELS);
+        let existing_tail = TRACEBACK_TAIL_LEVELS - appended_tail;
+
+        if existing_tail > 0 {
+            retained.extend(
+                existing
+                    .iter()
+                    .skip(existing.len().saturating_sub(existing_tail))
+                    .cloned(),
+            );
+        }
+
+        retained.extend(
+            frames
+                .iter()
+                .skip(frames.len().saturating_sub(appended_tail))
+                .cloned(),
+        );
+
+        self.omitted_frames = total_len.saturating_sub(retained.len());
+        self.frames = retained.into_boxed_slice();
     }
 
     /// Splits a traceback into the leading and trailing frames that should be
@@ -252,16 +307,14 @@ impl VmError {
     /// Short tracebacks are returned entirely in the leading section with an
     /// empty trailing section and an omitted count of zero.
     pub fn traceback_sections(&self) -> (&[VmTraceFrame], usize, &[VmTraceFrame]) {
-        if self.frames.len() <= TRACEBACK_HEAD_LEVELS + TRACEBACK_TAIL_LEVELS {
+        if self.omitted_frames == 0 {
             return (&self.frames, 0, &[]);
         }
 
-        let tail_start = self.frames.len() - TRACEBACK_TAIL_LEVELS;
-
         (
             &self.frames[..TRACEBACK_HEAD_LEVELS],
-            tail_start - TRACEBACK_HEAD_LEVELS,
-            &self.frames[tail_start..],
+            self.omitted_frames,
+            &self.frames[TRACEBACK_HEAD_LEVELS..],
         )
     }
 
@@ -396,10 +449,52 @@ mod tests {
 
         assert_eq!(head, &error.frames[..10]);
         assert_eq!(skipped, 9);
-        assert_eq!(tail, &error.frames[19..]);
+        assert_eq!(tail, &error.frames[10..]);
 
         let rendered = error.to_string();
         assert!(rendered.contains("\n\t...\t(skipping 9 levels)"));
         assert_eq!(rendered.matches("\n\t[source").count(), 21);
+    }
+
+    #[test]
+    fn appending_to_a_condensed_trace_preserves_global_head_and_tail() {
+        let mut error = VmError::with_frames(
+            VmErrorKind::ProgramCounterOutOfBounds { pc: 0 },
+            lua_frames(15),
+        );
+        error.append_frames(
+            lua_frames(16)
+                .into_vec()
+                .into_iter()
+                .map(|frame| match frame {
+                    VmTraceFrame::Lua {
+                        function,
+                        function_span,
+                        pc,
+                        instruction_span,
+                    } => VmTraceFrame::Lua {
+                        function,
+                        function_span,
+                        pc: pc + 15,
+                        instruction_span,
+                    },
+                    VmTraceFrame::Native { .. } => unreachable!(),
+                }),
+        );
+
+        let (head, skipped, tail) = error.traceback_sections();
+        let pcs = |frames: &[VmTraceFrame]| {
+            frames
+                .iter()
+                .map(|frame| match frame {
+                    VmTraceFrame::Lua { pc, .. } => *pc,
+                    VmTraceFrame::Native { .. } => unreachable!(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(pcs(head), (0..10).collect::<Vec<_>>());
+        assert_eq!(skipped, 10);
+        assert_eq!(pcs(tail), (20..31).collect::<Vec<_>>());
     }
 }

@@ -20,10 +20,12 @@ use crate::{
 use super::activation::{OpenExtent, ResultTarget};
 
 pub(crate) struct CallFrame {
+    function: FunctionId,
     bundle: Rc<PrototypeBundle>,
     prototype: RuntimePrototypeIndex,
-    upvalues: Box<[UpvalueId]>,
-    varargs: Box<[RawValue]>,
+    runtime_prototype: Rc<RuntimePrototype>,
+    upvalues: Rc<[UpvalueId]>,
+    varargs: Vec<RawValue>,
     registers: Vec<RegisterSlot>,
     declared_registers: usize,
     open_results: Option<OpenExtent>,
@@ -33,12 +35,13 @@ pub(crate) struct CallFrame {
 
 impl CallFrame {
     pub(crate) fn new(invocation: LuaInvocation, arguments: &[RawValue]) -> FaultResult<Self> {
-        let (bundle, prototype, upvalues) = invocation.into_parts();
+        let (function, bundle, prototype, upvalues) = invocation.into_parts();
 
+        let runtime_prototype = bundle
+            .prototype_handle(prototype)
+            .ok_or_else(|| invalid_prototype(prototype))?;
         let (parameter_count, is_vararg, declared_registers, expected_upvalues) = {
-            let prototype = bundle
-                .prototype(prototype)
-                .ok_or_else(|| invalid_prototype(prototype))?;
+            let prototype = &runtime_prototype;
 
             (
                 usize::from(prototype.parameter_count()),
@@ -80,18 +83,16 @@ impl CallFrame {
         }
 
         let varargs = if is_vararg {
-            arguments
-                .get(parameter_count..)
-                .unwrap_or(&[])
-                .to_vec()
-                .into_boxed_slice()
+            arguments.get(parameter_count..).unwrap_or(&[]).to_vec()
         } else {
-            Box::new([])
+            Vec::new()
         };
 
         Ok(Self {
+            function,
             bundle,
             prototype,
+            runtime_prototype,
             upvalues,
             varargs,
             registers,
@@ -100,6 +101,116 @@ impl CallFrame {
             pc: 0,
             current_pc: None,
         })
+    }
+
+    pub(crate) fn replace(
+        &mut self,
+        invocation: LuaInvocation,
+        arguments: &[RawValue],
+    ) -> FaultResult<()> {
+        let (function, bundle, prototype, upvalues) = invocation.into_parts();
+
+        let runtime_prototype = bundle
+            .prototype_handle(prototype)
+            .ok_or_else(|| invalid_prototype(prototype))?;
+        let (parameter_count, is_vararg, declared_registers, expected_upvalues) = {
+            let prototype = &runtime_prototype;
+
+            (
+                usize::from(prototype.parameter_count()),
+                prototype.is_vararg(),
+                usize::from(prototype.max_registers()),
+                prototype.capture_descriptors().len(),
+            )
+        };
+
+        if parameter_count > declared_registers {
+            return Err(VmErrorKind::InvalidPrototypeRegisters {
+                parameters: u8::try_from(parameter_count).unwrap_or(u8::MAX),
+                registers: u16::try_from(declared_registers).unwrap_or(u16::MAX),
+            });
+        }
+
+        if upvalues.len() != expected_upvalues {
+            return Err(VmErrorKind::InvalidClosureUpvalueCount {
+                expected: expected_upvalues,
+                actual: upvalues.len(),
+            });
+        }
+
+        self.reset_values(parameter_count, is_vararg, declared_registers, arguments)?;
+
+        self.function = function;
+        self.bundle = bundle;
+        self.prototype = prototype;
+        self.runtime_prototype = runtime_prototype;
+        self.upvalues = upvalues;
+
+        Ok(())
+    }
+
+    pub(crate) fn function(&self) -> FunctionId {
+        self.function
+    }
+
+    pub(crate) fn restart(&mut self, arguments: &[RawValue]) -> FaultResult<()> {
+        let (parameter_count, is_vararg, declared_registers) = {
+            let prototype = self.runtime_prototype();
+            (
+                usize::from(prototype.parameter_count()),
+                prototype.is_vararg(),
+                usize::from(prototype.max_registers()),
+            )
+        };
+
+        self.reset_values(parameter_count, is_vararg, declared_registers, arguments)
+    }
+
+    fn reset_values(
+        &mut self,
+        parameter_count: usize,
+        is_vararg: bool,
+        declared_registers: usize,
+        arguments: &[RawValue],
+    ) -> FaultResult<()> {
+        self.registers
+            .try_reserve(declared_registers.saturating_sub(self.registers.len()))
+            .map_err(|_| VmErrorKind::FrameCapacityExceeded {
+                requested: declared_registers,
+            })?;
+
+        let extra_arguments = if is_vararg {
+            arguments.get(parameter_count..).unwrap_or(&[])
+        } else {
+            &[]
+        };
+
+        self.varargs
+            .try_reserve(extra_arguments.len().saturating_sub(self.varargs.len()))
+            .map_err(|_| VmErrorKind::FrameCapacityExceeded {
+                requested: extra_arguments.len(),
+            })?;
+
+        self.declared_registers = declared_registers;
+        self.open_results = None;
+        self.pc = 0;
+        self.current_pc = None;
+
+        self.registers.clear();
+        for index in 0..declared_registers {
+            let value = if index < parameter_count {
+                arguments.get(index).cloned().unwrap_or(RawValue::Nil)
+            } else {
+                RawValue::Nil
+            };
+
+            self.registers.push(RegisterSlot::direct(value));
+        }
+
+        self.varargs.clear();
+        self.varargs.extend_from_slice(extra_arguments);
+
+        Ok(())
     }
 
     pub(crate) fn next_instruction(&mut self) -> FaultResult<Instruction> {
@@ -463,6 +574,63 @@ impl CallFrame {
         Ok((callee, arguments))
     }
 
+    pub(crate) fn collect_call_into(
+        &mut self,
+        runtime: &Runtime,
+        base: Register,
+        arguments: Count,
+        destination: &mut Vec<RawValue>,
+    ) -> FaultResult<RawValue> {
+        let callee = self.get_register(runtime, base)?;
+        let base = usize::from(base.0);
+        let argument_start = base
+            .checked_add(1)
+            .ok_or(VmErrorKind::InvalidRegisterRange {
+                start: base,
+                count: 1,
+            })?;
+
+        destination.clear();
+
+        match arguments {
+            Count::Fixed(count) => {
+                let count = usize::from(count);
+                let end =
+                    argument_start
+                        .checked_add(count)
+                        .ok_or(VmErrorKind::InvalidRegisterRange {
+                            start: argument_start,
+                            count,
+                        })?;
+                let slots = self.registers.get(argument_start..end).ok_or(
+                    VmErrorKind::InvalidRegisterRange {
+                        start: argument_start,
+                        count,
+                    },
+                )?;
+
+                destination
+                    .try_reserve(count)
+                    .map_err(|_| VmErrorKind::FrameCapacityExceeded { requested: count })?;
+
+                for slot in slots {
+                    destination.push(read_slot(runtime, slot)?);
+                }
+            }
+            Count::Open => {
+                let values = self.take_open_results(runtime, argument_start)?;
+                destination.try_reserve(values.len()).map_err(|_| {
+                    VmErrorKind::FrameCapacityExceeded {
+                        requested: values.len(),
+                    }
+                })?;
+                destination.extend(values);
+            }
+        }
+
+        Ok(callee)
+    }
+
     pub(crate) fn collect_return(
         &mut self,
         runtime: &Runtime,
@@ -553,7 +721,7 @@ impl CallFrame {
     }
 
     pub(crate) fn visit_roots(&self, mut visit: impl FnMut(ObjectId)) {
-        for upvalue in &self.upvalues {
+        for upvalue in self.upvalues.iter() {
             visit(upvalue.object());
         }
 
@@ -601,9 +769,7 @@ impl CallFrame {
     }
 
     fn runtime_prototype(&self) -> &RuntimePrototype {
-        self.bundle
-            .prototype(self.prototype)
-            .expect("frame prototype belongs to its bundle")
+        &self.runtime_prototype
     }
 }
 

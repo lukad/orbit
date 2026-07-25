@@ -1,7 +1,7 @@
 use orbit_common::Span;
 
 use crate::{
-    bytecode::{Instruction, SourceMapEntry},
+    bytecode::{ImmediateOperandSide, Instruction, SourceMapEntry},
     error::{CompileError, CompileErrorKind},
     registers::VReg,
 };
@@ -17,6 +17,7 @@ pub(crate) struct EmittedCode {
 enum PatchField {
     Jump,
     JumpIfFalsy,
+    JumpIfNotEqualSmallInt,
     ForPrepExit,
     ForLoopBody,
     TForLoopBody,
@@ -128,6 +129,27 @@ impl Emitter {
         )
     }
 
+    pub(crate) fn jump_if_not_equal_small_int(
+        &mut self,
+        span: Span,
+        register: VReg,
+        immediate: i16,
+        side: ImmediateOperandSide,
+        target: CodeLabel,
+    ) -> Result<(), CompileError> {
+        self.emit_relocated(
+            span,
+            Instruction::JumpIfNotEqualSmallInt {
+                register: register.to_bytecode(span)?,
+                immediate,
+                side,
+                offset: 0,
+            },
+            target,
+            PatchField::JumpIfNotEqualSmallInt,
+        )
+    }
+
     pub(crate) fn for_prep(
         &mut self,
         span: Span,
@@ -208,6 +230,10 @@ impl Emitter {
             match (relocation.field, instruction) {
                 (PatchField::Jump, Instruction::Jump { offset: slot })
                 | (PatchField::JumpIfFalsy, Instruction::JumpIfFalsy { offset: slot, .. })
+                | (
+                    PatchField::JumpIfNotEqualSmallInt,
+                    Instruction::JumpIfNotEqualSmallInt { offset: slot, .. },
+                )
                 | (
                     PatchField::ForPrepExit,
                     Instruction::ForPrep {
