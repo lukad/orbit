@@ -45,7 +45,7 @@ pub enum LoadError {
     Lex(#[from] LexError),
     #[error(transparent)]
     Parse(#[from] ParseError),
-    #[error("source resolution failed")]
+    #[error("source resolution failed: {}", render_diagnostics(diagnostics))]
     Resolve { diagnostics: Box<[Diagnostic]> },
     #[error(transparent)]
     Compile(#[from] CompileError),
@@ -90,6 +90,14 @@ impl LoadError {
             | Self::StdinIo { .. } => None,
         }
     }
+}
+
+fn render_diagnostics(diagnostics: &[Diagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Source input accepted by a dynamic [`LoadService`].

@@ -6119,7 +6119,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_forward_backward_shadowed_and_cyclic_gotos() {
+    fn lowers_forward_backward_reused_and_cyclic_gotos() {
         let chunk = compile_source(
             "goto target\n\
              local skipped = function() return 1 end\n\
@@ -6152,9 +6152,9 @@ mod tests {
             ]
         ));
 
-        let chunk = compile_source("::same:: do goto same; ::same:: end");
+        let chunk = compile_source("do goto same; ::same:: end do goto same; ::same:: end");
 
-        assert_eq!(jump_offsets(&chunk), vec![0]);
+        assert_eq!(jump_offsets(&chunk), vec![0, 0]);
 
         let chunk = compile_source(
             "goto second\n\

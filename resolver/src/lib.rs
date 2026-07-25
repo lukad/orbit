@@ -282,22 +282,18 @@ impl<'ast> Resolver<'ast> {
                 continue;
             };
 
-            let duplicate = self
-                .current_function()
+            let function = self.current_function();
+            let duplicate = function
                 .scope_stack
-                .last()
-                .unwrap()
-                .labels
-                .get(&name.value)
-                .copied();
-            if let Some(previous) = duplicate {
-                let previous_span = self.current_function().labels[previous].span;
+                .iter()
+                .rev()
+                .filter_map(|scope| scope.labels.get(&name.value).copied())
+                .find(|label| function.labels[*label].span.start < name.span.start);
+
+            if duplicate.is_some() {
                 self.diagnostics.push(Diagnostic::error(
                     name.span,
-                    format!(
-                        "duplicate label `{}` (first declared at {}..{})",
-                        name.value, previous_span.start, previous_span.end
-                    ),
+                    format!("label '{}' already defined", name.value),
                 ));
                 continue;
             }
@@ -797,14 +793,10 @@ impl<'ast> Resolver<'ast> {
         let label = self
             .current_function()
             .scope_stack
-            .last()
-            .unwrap()
-            .labels
-            .get(&name.value)
-            .copied()
-            .expect("labels are predeclared before their block is resolved");
+            .iter()
+            .rev()
+            .find_map(|scope| scope.labels.get(&name.value).copied())?;
 
-        // A duplicate points at the first label's ID and was already diagnosed.
         if self.current_function().labels[label].span != name.span {
             return None;
         }
@@ -833,7 +825,7 @@ impl<'ast> Resolver<'ast> {
         let Some(target) = target else {
             self.diagnostics.push(Diagnostic::error(
                 name.span,
-                format!("no visible label named `{}`", name.value),
+                format!("no visible label '{}' for <goto>", name.value),
             ));
             return None;
         };
@@ -864,8 +856,8 @@ impl<'ast> Resolver<'ast> {
                 self.diagnostics.push(Diagnostic::error(
                     goto.span,
                     format!(
-                        "goto jumps into the scope of local `{}` declared at {}..{}",
-                        local.name, local.span.start, local.span.end
+                        "<goto {}> jumps into the scope of local '{}'",
+                        label.name, local.name
                     ),
                 ));
             }
@@ -1561,7 +1553,7 @@ mod tests {
         assert!(
             messages
                 .iter()
-                .any(|message| message.contains("duplicate label"))
+                .any(|message| message.contains("already defined"))
         );
     }
 
@@ -1603,18 +1595,11 @@ mod tests {
     }
 
     #[test]
-    fn inner_forward_labels_shadow_outer_labels() {
-        let chunk = resolved("::same:: do goto same; ::same:: end");
-        let root_statements = root_statements(&chunk);
-        let HirStmtKind::Block(block) = chunk.entry.statements[root_statements[1]].kind else {
-            panic!("expected do block")
-        };
-        let inner_statements = &chunk.entry.blocks[block].statements;
-        let HirStmtKind::Goto { target, .. } = chunk.entry.statements[inner_statements[0]].kind
-        else {
-            panic!("expected goto")
-        };
-        assert_eq!(target, LabelId(1));
+    fn inner_labels_conflict_with_active_outer_labels() {
+        let diagnostics = resolve_source("::same:: do goto same; ::same:: end")
+            .expect_err("a label conflicting with an active outer label should fail resolution");
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("already defined"));
     }
 
     #[test]
