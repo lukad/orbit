@@ -500,3 +500,171 @@ fn fmod_handles_mininteger_remainder_minus_one_without_overflow() {
     let values = execute(&mut state, "return math.fmod(math.mininteger, -1)").unwrap();
     assert_eq!(values, vec![Value::Integer(0)]);
 }
+
+#[test]
+fn install_registers_math_floor() {
+    let mut state = installed_state();
+
+    let Value::Table(math) = state.get_global(b"math").unwrap() else {
+        panic!("math was not installed as a table");
+    };
+
+    assert!(matches!(
+        state.raw_get(&math, &string("floor")).unwrap(),
+        Value::Function(_)
+    ));
+}
+
+#[test]
+fn floor_passes_integers_through_unchanged() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.floor(7),
+                math.floor(-7),
+                math.floor(0),
+                math.floor(math.mininteger),
+                math.floor(math.maxinteger)
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(7),
+            Value::Integer(-7),
+            Value::Integer(0),
+            Value::Integer(i64::MIN),
+            Value::Integer(i64::MAX),
+        ]
+    );
+}
+
+#[test]
+fn floor_rounds_floats_down_and_returns_integers_when_representable() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.floor(3.4),
+                math.floor(3.7),
+                math.floor(-3.4),
+                math.floor(3.0),
+                math.floor(0.5),
+                math.floor(-0.5),
+                math.floor(math.mininteger + 0.0)
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(3),
+            Value::Integer(3),
+            Value::Integer(-4),
+            Value::Integer(3),
+            Value::Integer(0),
+            Value::Integer(-1),
+            Value::Integer(i64::MIN),
+        ]
+    );
+}
+
+#[test]
+fn floor_keeps_unrepresentable_and_non_finite_floats_as_floats() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local nan = math.floor(0 / 0)
+            return
+                math.floor(1e50),
+                math.floor(-1e50),
+                math.floor(9223372036854775808.0),
+                math.floor(1 / 0),
+                math.floor(-1 / 0),
+                nan ~= nan
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Float(1e50),
+            Value::Float(-1e50),
+            Value::Float(9223372036854775808.0),
+            Value::Float(f64::INFINITY),
+            Value::Float(f64::NEG_INFINITY),
+            Value::Boolean(true),
+        ]
+    );
+}
+
+#[test]
+fn floor_coerces_numeric_strings() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.floor("3.7"),
+                math.floor("-3.7"),
+                math.floor("7"),
+                math.floor("1e50")
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(3),
+            Value::Integer(-4),
+            Value::Integer(7),
+            Value::Float(1e50),
+        ]
+    );
+}
+
+#[test]
+fn floor_reports_missing_and_non_numeric_arguments() {
+    let mut state = installed_state();
+
+    let missing = execute(&mut state, "return math.floor()").unwrap_err();
+    assert_eq!(
+        missing.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #1 to 'floor' (number expected, got no value)".into(),
+        }
+    );
+    assert!(matches!(
+        missing.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "math.floor"
+    ));
+
+    let table = execute(&mut state, "return math.floor({})").unwrap_err();
+    assert_eq!(
+        table.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #1 to 'floor' (number expected, got table)".into(),
+        }
+    );
+
+    let string = execute(&mut state, "return math.floor('nope')").unwrap_err();
+    assert_eq!(
+        string.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #1 to 'floor' (number expected, got string)".into(),
+        }
+    );
+}

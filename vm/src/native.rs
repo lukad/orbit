@@ -58,6 +58,14 @@ impl<'context> LocalValue<'context> {
         self.raw.is_truthy()
     }
 
+    pub fn is_integer(&self) -> bool {
+        self.raw.is_integer()
+    }
+
+    pub fn is_float(&self) -> bool {
+        self.raw.is_float()
+    }
+
     pub fn as_boolean(&self) -> Option<bool> {
         self.raw.as_boolean()
     }

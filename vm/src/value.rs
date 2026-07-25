@@ -73,6 +73,14 @@ impl RawValue {
         !self.is_falsy()
     }
 
+    pub(crate) fn is_integer(&self) -> bool {
+        matches!(self, Self::Integer(_))
+    }
+
+    pub(crate) fn is_float(&self) -> bool {
+        matches!(self, Self::Float(_))
+    }
+
     pub(crate) fn object_id(&self) -> Option<ObjectId> {
         match self {
             Self::Table(id) => Some(id.object()),
