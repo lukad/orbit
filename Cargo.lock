@@ -248,6 +248,7 @@ dependencies = [
 name = "orbit-stdlib"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "orbit-common",
  "orbit-compiler",
  "orbit-loader",

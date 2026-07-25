@@ -1,6 +1,9 @@
 use orbit_vm::{NativeAction, NativeContext, VmResult};
 
-use crate::{argument, error};
+use crate::{
+    argument, error,
+    string::offsets::{end_offset, start_offset},
+};
 
 pub(crate) const FUNCTION_NAME: &str = "sub";
 
@@ -37,28 +40,4 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
     };
 
     Ok(context.return_values([context.string(result)]))
-}
-
-fn start_offset(position: i64, len: usize) -> usize {
-    if position > 0 {
-        usize::try_from(position - 1).unwrap_or(usize::MAX).min(len)
-    } else if position == 0 {
-        0
-    } else {
-        let distance = usize::try_from(position.unsigned_abs()).unwrap_or(usize::MAX);
-        len.saturating_sub(distance)
-    }
-}
-
-fn end_offset(position: i64, len: usize) -> usize {
-    if position >= 0 {
-        usize::try_from(position).unwrap_or(usize::MAX).min(len)
-    } else {
-        let distance = usize::try_from(position.unsigned_abs()).unwrap_or(usize::MAX);
-        if distance > len {
-            0
-        } else {
-            len - distance + 1
-        }
-    }
 }

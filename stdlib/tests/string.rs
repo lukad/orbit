@@ -635,3 +635,492 @@ fn assert_string_contains(value: &Value, expected: &[u8]) {
         "{value:?} does not contain {expected:?}",
     );
 }
+
+fn call_find(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(find) = state.raw_get(&string_library, &string("find"))? else {
+        panic!("string.find was not installed as a function");
+    };
+
+    match state.call(&find, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.find unexpectedly yielded"),
+    }
+}
+
+fn find(state: &mut State, subject: impl AsRef<[u8]>, pattern: impl AsRef<[u8]>) -> Vec<Value> {
+    call_find(state, &[string(subject), string(pattern)]).unwrap()
+}
+
+fn assert_find_error(error: VmError, expected: &str) {
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: expected.into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.find"
+    ));
+}
+
+#[test]
+fn find_searches_plain_substrings_and_reports_one_based_inclusive_positions() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        find(&mut state, "hello world", "o w"),
+        vec![Value::Integer(5), Value::Integer(7)]
+    );
+    assert_eq!(find(&mut state, "hello", "xyz"), vec![Value::Nil]);
+    assert_eq!(
+        call_find(
+            &mut state,
+            &[string("hello"), string("l"), Value::Integer(4)]
+        )
+        .unwrap(),
+        vec![Value::Integer(4), Value::Integer(4)]
+    );
+    assert_eq!(
+        call_find(
+            &mut state,
+            &[string("hello"), string("l"), Value::Integer(5)]
+        )
+        .unwrap(),
+        vec![Value::Nil]
+    );
+}
+
+#[test]
+fn find_matches_the_empty_pattern_at_the_initial_position() {
+    let mut state = installed_state();
+
+    for (init, expected) in [
+        (None, vec![Value::Integer(1), Value::Integer(0)]),
+        (Some(3), vec![Value::Integer(3), Value::Integer(2)]),
+        (Some(4), vec![Value::Integer(4), Value::Integer(3)]),
+        (Some(5), vec![Value::Nil]),
+        (Some(-1), vec![Value::Integer(3), Value::Integer(2)]),
+    ] {
+        let mut arguments = vec![string("abc"), string("")];
+        if let Some(init) = init {
+            arguments.push(Value::Integer(init));
+        }
+        assert_eq!(
+            call_find(&mut state, &arguments).unwrap(),
+            expected,
+            "init {init:?}"
+        );
+    }
+}
+
+#[test]
+fn find_honours_positive_negative_and_out_of_range_init_positions() {
+    let mut state = installed_state();
+
+    for (init, expected) in [
+        (-2, vec![Value::Integer(4), Value::Integer(4)]),
+        (-100, vec![Value::Integer(3), Value::Integer(3)]),
+        (i64::MIN, vec![Value::Integer(3), Value::Integer(3)]),
+        (5, vec![Value::Nil]),
+        (i64::MAX, vec![Value::Nil]),
+    ] {
+        assert_eq!(
+            call_find(
+                &mut state,
+                &[string("hello"), string("l"), Value::Integer(init)]
+            )
+            .unwrap(),
+            expected,
+            "init {init}"
+        );
+    }
+
+    // An init past the end fails even for patterns that match empty.
+    for init in [5, i64::MAX] {
+        assert_eq!(
+            call_find(
+                &mut state,
+                &[string("abc"), string("%a*"), Value::Integer(init)]
+            )
+            .unwrap(),
+            vec![Value::Nil],
+            "init {init}"
+        );
+    }
+}
+
+#[test]
+fn find_with_plain_flag_treats_the_pattern_as_a_literal() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        call_find(
+            &mut state,
+            &[
+                string("hello"),
+                string("l+"),
+                Value::Integer(1),
+                Value::Boolean(true)
+            ]
+        )
+        .unwrap(),
+        vec![Value::Nil]
+    );
+    assert_eq!(
+        call_find(
+            &mut state,
+            &[
+                string("a.c"),
+                string("%."),
+                Value::Integer(1),
+                Value::Boolean(true)
+            ]
+        )
+        .unwrap(),
+        vec![Value::Nil]
+    );
+    assert_eq!(
+        call_find(
+            &mut state,
+            &[
+                string("a.c"),
+                string("."),
+                Value::Integer(1),
+                Value::Boolean(true)
+            ]
+        )
+        .unwrap(),
+        vec![Value::Integer(2), Value::Integer(2)]
+    );
+}
+
+#[test]
+fn find_without_magic_characters_uses_a_literal_search() {
+    let mut state = installed_state();
+
+    // ')' and ']' are not in the magic set, so these never reach the
+    // pattern engine (where a bare ')' would be an error).
+    assert_eq!(
+        find(&mut state, "a)b", ")b"),
+        vec![Value::Integer(2), Value::Integer(3)]
+    );
+    assert_eq!(
+        find(&mut state, "a]b", "]"),
+        vec![Value::Integer(2), Value::Integer(2)]
+    );
+}
+
+#[test]
+fn find_supports_character_classes_and_their_complements() {
+    let mut state = installed_state();
+
+    for (subject, pattern, expected) in [
+        ("abc123", "%d+", vec![Value::Integer(4), Value::Integer(6)]),
+        ("abc123", "%a+", vec![Value::Integer(1), Value::Integer(3)]),
+        ("abc def", "%S+", vec![Value::Integer(1), Value::Integer(3)]),
+        ("a1", "%A", vec![Value::Integer(2), Value::Integer(2)]),
+        (" \t\nx", "%s+", vec![Value::Integer(1), Value::Integer(3)]),
+        ("1Fz", "%x+", vec![Value::Integer(1), Value::Integer(2)]),
+        ("HELLO", "%u+", vec![Value::Integer(1), Value::Integer(5)]),
+        ("hello", "%l+", vec![Value::Integer(1), Value::Integer(5)]),
+        ("h3llo", "%w+", vec![Value::Integer(1), Value::Integer(5)]),
+        ("(a)", "%p", vec![Value::Integer(1), Value::Integer(1)]),
+        ("a\nb", ".", vec![Value::Integer(1), Value::Integer(1)]),
+        ("abc", "%d", vec![Value::Nil]),
+        ("abc", "%U+", vec![Value::Integer(1), Value::Integer(3)]),
+    ] {
+        assert_eq!(find(&mut state, subject, pattern), expected, "{pattern:?}");
+    }
+}
+
+#[test]
+fn find_supports_sets_ranges_negation_and_set_escapes() {
+    let mut state = installed_state();
+
+    for (subject, pattern, expected) in [
+        (
+            "abcdefg",
+            "[cd]",
+            vec![Value::Integer(3), Value::Integer(3)],
+        ),
+        (
+            "xyzabc",
+            "[a-c]+",
+            vec![Value::Integer(4), Value::Integer(6)],
+        ),
+        (
+            "  abc",
+            "[^%s]+",
+            vec![Value::Integer(3), Value::Integer(5)],
+        ),
+        (
+            "abc123",
+            "[^0-9]+",
+            vec![Value::Integer(1), Value::Integer(3)],
+        ),
+        // ']' as the first set character is a literal.
+        ("a]b", "[]]", vec![Value::Integer(2), Value::Integer(2)]),
+        // '-' as the last set character is a literal.
+        ("a-b", "[c-]", vec![Value::Integer(2), Value::Integer(2)]),
+        // Escapes inside sets.
+        ("a%b", "[%%]", vec![Value::Integer(2), Value::Integer(2)]),
+        ("[x]", "[]%[]", vec![Value::Integer(1), Value::Integer(1)]),
+        ("axb", "[^]]+", vec![Value::Integer(1), Value::Integer(3)]),
+    ] {
+        assert_eq!(find(&mut state, subject, pattern), expected, "{pattern:?}");
+    }
+}
+
+#[test]
+fn find_supports_greedy_lazy_and_optional_repetition() {
+    let mut state = installed_state();
+
+    for (subject, pattern, expected) in [
+        ("<a><b>", "<.*>", vec![Value::Integer(1), Value::Integer(6)]),
+        ("<a><b>", "<.->", vec![Value::Integer(1), Value::Integer(3)]),
+        ("hello", "l+", vec![Value::Integer(3), Value::Integer(4)]),
+        ("abbbbc", "ab+c", vec![Value::Integer(1), Value::Integer(6)]),
+        ("abc", "ab+c", vec![Value::Integer(1), Value::Integer(3)]),
+        ("ac", "ab+c", vec![Value::Nil]),
+        (
+            "color",
+            "colou?r",
+            vec![Value::Integer(1), Value::Integer(5)],
+        ),
+        (
+            "colour",
+            "colou?r",
+            vec![Value::Integer(1), Value::Integer(6)],
+        ),
+        // Zero repetitions match the empty string.
+        ("xyz", "a*", vec![Value::Integer(1), Value::Integer(0)]),
+        ("aaab", "a*b", vec![Value::Integer(1), Value::Integer(4)]),
+    ] {
+        assert_eq!(find(&mut state, subject, pattern), expected, "{pattern:?}");
+    }
+}
+
+#[test]
+fn find_supports_anchors() {
+    let mut state = installed_state();
+
+    assert_eq!(find(&mut state, "abc", "^b"), vec![Value::Nil]);
+    assert_eq!(
+        call_find(
+            &mut state,
+            &[string("abc"), string("^b"), Value::Integer(2)]
+        )
+        .unwrap(),
+        vec![Value::Integer(2), Value::Integer(2)]
+    );
+    // An anchor with nothing after it matches the empty string at init.
+    assert_eq!(
+        call_find(&mut state, &[string("abc"), string("^"), Value::Integer(3)]).unwrap(),
+        vec![Value::Integer(3), Value::Integer(2)]
+    );
+    assert_eq!(
+        find(&mut state, "abc", "c$"),
+        vec![Value::Integer(3), Value::Integer(3)]
+    );
+    assert_eq!(find(&mut state, "abc", "b$"), vec![Value::Nil]);
+    // '$' alone matches the empty string at the end of the subject.
+    assert_eq!(
+        find(&mut state, "abc", "$"),
+        vec![Value::Integer(4), Value::Integer(3)]
+    );
+    // '$' anywhere but at the end of the pattern is a literal.
+    assert_eq!(
+        find(&mut state, "a$b", "$b"),
+        vec![Value::Integer(2), Value::Integer(3)]
+    );
+}
+
+#[test]
+fn find_supports_escaped_magic_characters() {
+    let mut state = installed_state();
+
+    for (subject, pattern, expected) in [
+        ("a.c", "%.", vec![Value::Integer(2), Value::Integer(2)]),
+        ("100%", "%%", vec![Value::Integer(4), Value::Integer(4)]),
+        ("(a)", "%(a%)", vec![Value::Integer(1), Value::Integer(3)]),
+        ("a+b", "a%+b", vec![Value::Integer(1), Value::Integer(3)]),
+        // Escaped letters that are not classes match literally (PUC behavior).
+        ("q", "%q", vec![Value::Integer(1), Value::Integer(1)]),
+    ] {
+        assert_eq!(find(&mut state, subject, pattern), expected, "{pattern:?}");
+    }
+}
+
+#[test]
+fn find_returns_captures_after_the_match_positions() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        find(&mut state, "key=value", "(%a+)=(%a+)"),
+        vec![
+            Value::Integer(1),
+            Value::Integer(9),
+            string("key"),
+            string("value"),
+        ]
+    );
+    // Captures may be empty.
+    assert_eq!(
+        find(&mut state, "abc", "(%a)(%d*)"),
+        vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            string("a"),
+            string(""),
+        ]
+    );
+    // Nested captures are returned outermost first.
+    assert_eq!(
+        find(&mut state, "abc", "((a)(b))"),
+        vec![
+            Value::Integer(1),
+            Value::Integer(2),
+            string("ab"),
+            string("a"),
+            string("b"),
+        ]
+    );
+}
+
+#[test]
+fn find_supports_position_captures_relative_to_the_subject_start() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        find(&mut state, "key=val", "()(=)"),
+        vec![
+            Value::Integer(4),
+            Value::Integer(4),
+            Value::Integer(4),
+            string("="),
+        ]
+    );
+    // Position captures count from the start of the subject, not from init.
+    assert_eq!(
+        call_find(
+            &mut state,
+            &[string("hello world"), string("()o()"), Value::Integer(5)]
+        )
+        .unwrap(),
+        vec![
+            Value::Integer(5),
+            Value::Integer(5),
+            Value::Integer(5),
+            Value::Integer(6),
+        ]
+    );
+}
+
+#[test]
+fn find_supports_balanced_matches() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        find(&mut state, "{nested {braces}}", "%b{}"),
+        vec![Value::Integer(1), Value::Integer(17)]
+    );
+    assert_eq!(find(&mut state, "{unclosed", "%b{}"), vec![Value::Nil]);
+    assert_eq!(
+        find(&mut state, "f(a(b)c)", "%b()"),
+        vec![Value::Integer(2), Value::Integer(8)]
+    );
+}
+
+#[test]
+fn find_supports_frontier_patterns() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        find(&mut state, "THE (quick) fox", "%f[%a]%u+"),
+        vec![Value::Integer(1), Value::Integer(3)]
+    );
+    assert_eq!(
+        find(&mut state, "the (quick) brown", "%f[%l]%l+"),
+        vec![Value::Integer(1), Value::Integer(3)]
+    );
+    // The frontier is zero-width and can match at the end of the subject.
+    assert_eq!(
+        find(&mut state, "hello", "%f[%A]"),
+        vec![Value::Integer(6), Value::Integer(5)]
+    );
+}
+
+#[test]
+fn find_supports_back_references() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        find(&mut state, "abcabc", "(abc)%1"),
+        vec![Value::Integer(1), Value::Integer(6), string("abc")]
+    );
+    assert_eq!(find(&mut state, "abcabd", "(abc)%1"), vec![Value::Nil]);
+}
+
+#[test]
+fn find_reports_malformed_patterns() {
+    let mut state = installed_state();
+    let cases = [
+        ("%", "malformed pattern (ends with '%')"),
+        ("[a", "malformed pattern (missing ']')"),
+        ("%a)", "invalid pattern capture"),
+        ("(a", "unfinished capture"),
+        ("%0", "invalid capture index"),
+        ("(a%1)", "invalid capture index"),
+        ("%b", "missing arguments to '%b' in pattern"),
+        ("%bx", "missing arguments to '%b' in pattern"),
+        ("%f", "missing '[' after '%f' in pattern"),
+        ("%fa", "missing '[' after '%f' in pattern"),
+    ];
+
+    for (pattern, expected) in cases {
+        let error = call_find(&mut state, &[string("abc"), string(pattern)]).unwrap_err();
+        assert_find_error(error, expected);
+    }
+}
+
+#[test]
+fn find_limits_captures_and_pattern_complexity() {
+    let mut state = installed_state();
+
+    let error = call_find(&mut state, &[string("a"), string("(".repeat(33))]).unwrap_err();
+    assert_find_error(error, "too many captures");
+
+    let error = call_find(
+        &mut state,
+        &[string("a".repeat(300)), string("a?".repeat(300))],
+    )
+    .unwrap_err();
+    assert_find_error(error, "pattern too complex");
+}
+
+#[test]
+fn find_operates_on_raw_bytes() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        find(&mut state, b"a\0b", b"\0"),
+        vec![Value::Integer(2), Value::Integer(2)]
+    );
+    assert_eq!(
+        find(&mut state, b"a\0b", "."),
+        vec![Value::Integer(1), Value::Integer(1)]
+    );
+    assert_eq!(
+        find(&mut state, [0xff, 0xfe], [0xfe]),
+        vec![Value::Integer(2), Value::Integer(2)]
+    );
+    // Captures preserve arbitrary bytes.
+    assert_eq!(
+        find(&mut state, b"a\0b", "a(.)b"),
+        vec![Value::Integer(1), Value::Integer(3), string(b"\0")]
+    );
+}

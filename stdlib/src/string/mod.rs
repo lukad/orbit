@@ -1,8 +1,11 @@
+mod find;
 mod format;
 mod formatting;
+mod offsets;
 mod pack;
 mod packing;
 mod packsize;
+mod pattern;
 mod sub;
 mod unpack;
 
@@ -49,6 +52,9 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
         format::FUNCTION_NAME,
         &Value::Function(format),
     )?;
+
+    let find = state.create_native_function("string.find", find::callback, &[])?;
+    set_field(state, &string, find::FUNCTION, &Value::Function(find))?;
 
     let metatable = state.create_table(0, 1)?;
     set_field(state, &metatable, b"__index", &Value::Table(string.clone()))?;
