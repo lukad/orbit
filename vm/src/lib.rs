@@ -23,6 +23,7 @@ pub use loading::{LoadError, LoadService, LoadSource, NoLoadService};
 pub use native::{
     ComparisonOp, LocalValue, NativeAction, NativeCallback, NativeContext, NativeEvent, NativeToken,
 };
+pub use runtime::GcMode;
 pub use state::{CallOutcome, State, SuspendedCall};
 pub use string::LuaString;
 pub use value::Value;

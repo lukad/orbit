@@ -83,9 +83,17 @@ impl Heap {
             .count()
     }
 
+    pub(crate) fn memory_bytes_estimate(&self) -> usize {
+        self.occupied_len() * size_of::<HeapSlot>()
+    }
+
     #[cfg(test)]
     pub(crate) fn allocation_debt(&self) -> usize {
         self.allocation_debt
+    }
+
+    pub(crate) fn reset_allocation_debt(&mut self) {
+        self.allocation_debt = 0;
     }
 
     pub(crate) fn collection_due(&self) -> bool {

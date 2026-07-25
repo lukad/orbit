@@ -30,6 +30,15 @@ pub(crate) struct Runtime {
     load_service: Box<dyn LoadService>,
     next_source_id: u64,
     source_ids: HashSet<SourceId>,
+    gc_stopped: bool,
+    /// Has no effect, we're actually always in generational mode
+    gc_mode: GcMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GcMode {
+    Incremental,
+    Generational,
 }
 
 impl Runtime {
@@ -48,6 +57,8 @@ impl Runtime {
             load_service,
             next_source_id: 0,
             source_ids: HashSet::new(),
+            gc_stopped: false,
+            gc_mode: GcMode::Incremental,
         })
     }
 

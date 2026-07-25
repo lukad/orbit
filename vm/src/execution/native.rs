@@ -3,8 +3,10 @@ use orbit_compiler::bytecode::BinaryOp;
 use crate::{
     error::{VmError, VmErrorKind, VmResult},
     execution::operators::ComparisonOutcome,
+    id::ObjectId,
     loading::LoadSource,
     native::{ComparisonOp, NativeActionKind, NativeContext, NativeServices, NativeToken},
+    runtime::GcMode,
     value::{RawValue, Value},
 };
 
@@ -41,8 +43,11 @@ impl Execution<'_> {
         let callback_result = {
             let event = event.as_data();
 
+            let roots = self.root_snapshot()?;
+
             let mut services = ExecutionNativeServices {
                 runtime: &mut *self.runtime,
+                roots,
             };
 
             let mut context = NativeContext::new(
@@ -286,6 +291,7 @@ impl Execution<'_> {
 
 struct ExecutionNativeServices<'runtime> {
     runtime: &'runtime mut crate::runtime::Runtime,
+    roots: Box<[ObjectId]>,
 }
 
 impl NativeServices for ExecutionNativeServices<'_> {
@@ -387,5 +393,31 @@ impl NativeServices for ExecutionNativeServices<'_> {
 
     fn file_exists(&self, filename: &[u8]) -> bool {
         self.runtime.file_exists(filename)
+    }
+
+    fn collect_garbage(&mut self) -> VmResult<usize> {
+        self.runtime
+            .collect_garbage(&self.roots)
+            .map_err(VmError::from)
+    }
+
+    fn gc_memory_kbytes(&self) -> f64 {
+        self.runtime.memory_kbytes()
+    }
+
+    fn set_gc_running(&mut self, running: bool) {
+        if running {
+            self.runtime.restart_gc();
+        } else {
+            self.runtime.stop_gc();
+        }
+    }
+
+    fn set_gc_mode(&mut self, mode: GcMode) -> GcMode {
+        self.runtime.set_gc_mode(mode)
+    }
+
+    fn gc_running(&self) -> bool {
+        self.runtime.gc_running()
     }
 }

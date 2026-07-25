@@ -6,6 +6,7 @@ use crate::{
     error::{VmError, VmResult},
     format::format_lua_float,
     loading::LoadSource,
+    runtime::GcMode,
     string::LuaString,
     value::{RawValue, Value},
 };
@@ -227,6 +228,11 @@ pub(crate) trait NativeServices {
         environment: Option<RawValue>,
     ) -> VmResult<RawValue>;
     fn file_exists(&self, filename: &[u8]) -> bool;
+    fn collect_garbage(&mut self) -> VmResult<usize>;
+    fn gc_memory_kbytes(&self) -> f64;
+    fn set_gc_running(&mut self, running: bool);
+    fn set_gc_mode(&mut self, mode: GcMode) -> GcMode;
+    fn gc_running(&self) -> bool;
 }
 
 pub struct NativeContext<'context> {
@@ -626,6 +632,26 @@ impl<'context> NativeContext<'context> {
                 token,
             },
         }
+    }
+
+    pub fn collect_garbage(&mut self) -> VmResult<usize> {
+        self.services.collect_garbage()
+    }
+
+    pub fn gc_memory_kbytes(&self) -> f64 {
+        self.services.gc_memory_kbytes()
+    }
+
+    pub fn set_gc_running(&mut self, running: bool) {
+        self.services.set_gc_running(running)
+    }
+
+    pub fn set_gc_mode(&mut self, mode: GcMode) -> GcMode {
+        self.services.set_gc_mode(mode)
+    }
+
+    pub fn gc_running(&self) -> bool {
+        self.services.gc_running()
     }
 }
 

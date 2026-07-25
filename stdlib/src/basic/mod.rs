@@ -1,6 +1,7 @@
 use orbit_vm::{LuaString, State, Value, VmResult};
 
 mod assert;
+mod collectgarbage;
 mod dofile;
 mod error;
 mod getmetatable;
@@ -75,6 +76,10 @@ pub fn install(state: &mut State) -> VmResult<()> {
 
     let error = state.create_native_function(error::FUNCTION, error::callback, &[])?;
     state.set_global(error::FUNCTION, &Value::Function(error))?;
+
+    let collectgarbage =
+        state.create_native_function(collectgarbage::FUNCTION, collectgarbage::callback, &[])?;
+    state.set_global(collectgarbage::FUNCTION, &Value::Function(collectgarbage))?;
 
     Ok(())
 }
