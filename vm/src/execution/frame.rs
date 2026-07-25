@@ -33,8 +33,53 @@ pub(crate) struct CallFrame {
     current_pc: Option<usize>,
 }
 
+/// Reusable heap-backed portions of a completed Lua frame.
+#[derive(Default)]
+pub(crate) struct CallFrameStorage {
+    varargs: Vec<RawValue>,
+    registers: Vec<RegisterSlot>,
+}
+
 impl CallFrame {
     pub(crate) fn new(invocation: LuaInvocation, arguments: &[RawValue]) -> FaultResult<Self> {
+        Self::new_reusing(invocation, arguments, CallFrameStorage::default())
+    }
+
+    pub(crate) fn new_reusing(
+        invocation: LuaInvocation,
+        arguments: &[RawValue],
+        storage: CallFrameStorage,
+    ) -> FaultResult<Self> {
+        Self::new_with_arguments(
+            invocation,
+            arguments.len(),
+            |index| Ok(arguments[index].clone()),
+            storage,
+        )
+    }
+
+    pub(crate) fn new_from_frame(
+        invocation: LuaInvocation,
+        runtime: &Runtime,
+        source: &Self,
+        argument_start: usize,
+        argument_count: usize,
+        storage: CallFrameStorage,
+    ) -> FaultResult<Self> {
+        Self::new_with_arguments(
+            invocation,
+            argument_count,
+            |index| source.get_register_index(runtime, argument_start + index),
+            storage,
+        )
+    }
+
+    fn new_with_arguments(
+        invocation: LuaInvocation,
+        argument_count: usize,
+        mut argument: impl FnMut(usize) -> FaultResult<RawValue>,
+        storage: CallFrameStorage,
+    ) -> FaultResult<Self> {
         let (function, bundle, prototype, upvalues) = invocation.into_parts();
 
         let runtime_prototype = bundle
@@ -65,7 +110,12 @@ impl CallFrame {
             });
         }
 
-        let mut registers = Vec::new();
+        let CallFrameStorage {
+            mut varargs,
+            mut registers,
+        } = storage;
+
+        registers.clear();
         registers.try_reserve(declared_registers).map_err(|_| {
             VmErrorKind::FrameCapacityExceeded {
                 requested: declared_registers,
@@ -73,8 +123,8 @@ impl CallFrame {
         })?;
 
         for index in 0..declared_registers {
-            let value = if index < parameter_count {
-                arguments.get(index).cloned().unwrap_or(RawValue::Nil)
+            let value = if index < parameter_count && index < argument_count {
+                argument(index)?
             } else {
                 RawValue::Nil
             };
@@ -82,11 +132,25 @@ impl CallFrame {
             registers.push(RegisterSlot::direct(value));
         }
 
-        let varargs = if is_vararg {
-            arguments.get(parameter_count..).unwrap_or(&[]).to_vec()
+        let extra_argument_start = parameter_count.min(argument_count);
+        let extra_argument_count = if is_vararg {
+            argument_count - extra_argument_start
         } else {
-            Vec::new()
+            0
         };
+
+        varargs.clear();
+        varargs.try_reserve(extra_argument_count).map_err(|_| {
+            VmErrorKind::FrameCapacityExceeded {
+                requested: extra_argument_count,
+            }
+        })?;
+
+        for index in extra_argument_start..argument_count {
+            if is_vararg {
+                varargs.push(argument(index)?);
+            }
+        }
 
         Ok(Self {
             function,
@@ -101,6 +165,16 @@ impl CallFrame {
             pc: 0,
             current_pc: None,
         })
+    }
+
+    pub(crate) fn into_storage(mut self) -> CallFrameStorage {
+        self.varargs.clear();
+        self.registers.clear();
+
+        CallFrameStorage {
+            varargs: self.varargs,
+            registers: self.registers,
+        }
     }
 
     pub(crate) fn replace(
@@ -257,6 +331,35 @@ impl CallFrame {
                 register: register.0,
             },
         )?;
+
+        write_slot(runtime, slot, value)
+    }
+
+    fn get_register_index(&self, runtime: &Runtime, index: usize) -> FaultResult<RawValue> {
+        let slot = self
+            .registers
+            .get(index)
+            .ok_or(VmErrorKind::InvalidRegisterRange {
+                start: index,
+                count: 1,
+            })?;
+
+        read_slot(runtime, slot)
+    }
+
+    fn set_register_index(
+        &mut self,
+        runtime: &mut Runtime,
+        index: usize,
+        value: RawValue,
+    ) -> FaultResult<()> {
+        let slot = self
+            .registers
+            .get_mut(index)
+            .ok_or(VmErrorKind::InvalidRegisterRange {
+                start: index,
+                count: 1,
+            })?;
 
         write_slot(runtime, slot, value)
     }
@@ -574,6 +677,54 @@ impl CallFrame {
         Ok((callee, arguments))
     }
 
+    pub(crate) fn call_register_range(
+        &self,
+        runtime: &Runtime,
+        base: Register,
+        arguments: Count,
+    ) -> FaultResult<(RawValue, usize, usize)> {
+        let callee = self.get_register(runtime, base)?;
+        let base = usize::from(base.0);
+        let start = base
+            .checked_add(1)
+            .ok_or(VmErrorKind::InvalidRegisterRange {
+                start: base,
+                count: 1,
+            })?;
+        let count = match arguments {
+            Count::Fixed(count) => usize::from(count),
+            Count::Open => {
+                let extent = self
+                    .open_results
+                    .ok_or(VmErrorKind::MissingOpenResultExtent)?;
+
+                if start > extent.base {
+                    return Err(VmErrorKind::InvalidOpenResultStart {
+                        requested_start: start,
+                        result_base: extent.base,
+                    });
+                }
+
+                extent.top - start
+            }
+        };
+        let end = start
+            .checked_add(count)
+            .ok_or(VmErrorKind::InvalidRegisterRange { start, count })?;
+
+        self.registers
+            .get(start..end)
+            .ok_or(VmErrorKind::InvalidRegisterRange { start, count })?;
+
+        Ok((callee, start, count))
+    }
+
+    pub(crate) fn consume_open_call_arguments(&mut self, arguments: Count) {
+        if matches!(arguments, Count::Open) {
+            self.reset_open_results();
+        }
+    }
+
     pub(crate) fn collect_call_into(
         &mut self,
         runtime: &Runtime,
@@ -645,6 +796,36 @@ impl CallFrame {
         }
     }
 
+    fn return_register_range(&self, base: Register, values: Count) -> FaultResult<(usize, usize)> {
+        let start = usize::from(base.0);
+        let count = match values {
+            Count::Fixed(count) => usize::from(count),
+            Count::Open => {
+                let extent = self
+                    .open_results
+                    .ok_or(VmErrorKind::MissingOpenResultExtent)?;
+
+                if start > extent.base {
+                    return Err(VmErrorKind::InvalidOpenResultStart {
+                        requested_start: start,
+                        result_base: extent.base,
+                    });
+                }
+
+                extent.top - start
+            }
+        };
+        let end = start
+            .checked_add(count)
+            .ok_or(VmErrorKind::InvalidRegisterRange { start, count })?;
+
+        self.registers
+            .get(start..end)
+            .ok_or(VmErrorKind::InvalidRegisterRange { start, count })?;
+
+        Ok((start, count))
+    }
+
     pub(crate) fn collect_list_values(
         &mut self,
         runtime: &Runtime,
@@ -683,6 +864,68 @@ impl CallFrame {
             }
             ResultTarget::Comparison { destination } => {
                 let result = values.first().is_some_and(RawValue::is_truthy);
+                self.set_register(runtime, destination, RawValue::Boolean(result))
+            }
+            ResultTarget::NewIndex => Ok(()),
+        }
+    }
+
+    pub(crate) fn accept_results_from_frame(
+        &mut self,
+        runtime: &mut Runtime,
+        target: ResultTarget,
+        source: &Self,
+        source_base: Register,
+        source_values: Count,
+    ) -> FaultResult<()> {
+        let (source_start, source_count) =
+            source.return_register_range(source_base, source_values)?;
+
+        match target {
+            ResultTarget::Call { base, results } => match results {
+                Count::Fixed(count) => {
+                    self.reset_open_results();
+                    self.copy_results_from_frame(
+                        runtime,
+                        base,
+                        usize::from(count),
+                        source,
+                        source_start,
+                        source_count,
+                    )
+                }
+                Count::Open => self.set_open_results_from_frame(
+                    runtime,
+                    base,
+                    source,
+                    source_start,
+                    source_count,
+                ),
+            },
+            ResultTarget::GenericFor { start, variables } => {
+                self.reset_open_results();
+                self.copy_results_from_frame(
+                    runtime,
+                    start,
+                    variables,
+                    source,
+                    source_start,
+                    source_count,
+                )
+            }
+            ResultTarget::Index { destination } | ResultTarget::Operator { destination } => {
+                let value = if source_count == 0 {
+                    RawValue::Nil
+                } else {
+                    source.get_register_index(runtime, source_start)?
+                };
+                self.set_register(runtime, destination, value)
+            }
+            ResultTarget::Comparison { destination } => {
+                let result = source_count != 0
+                    && source
+                        .get_register_index(runtime, source_start)?
+                        .is_truthy();
                 self.set_register(runtime, destination, RawValue::Boolean(result))
             }
             ResultTarget::NewIndex => Ok(()),
@@ -755,6 +998,73 @@ impl CallFrame {
 
         self.registers
             .resize_with(required, || RegisterSlot::direct(RawValue::Nil));
+
+        Ok(())
+    }
+
+    fn copy_results_from_frame(
+        &mut self,
+        runtime: &mut Runtime,
+        destination_start: usize,
+        destination_count: usize,
+        source: &Self,
+        source_start: usize,
+        source_count: usize,
+    ) -> FaultResult<()> {
+        let destination_end = destination_start.checked_add(destination_count).ok_or(
+            VmErrorKind::InvalidRegisterRange {
+                start: destination_start,
+                count: destination_count,
+            },
+        )?;
+
+        self.registers
+            .get(destination_start..destination_end)
+            .ok_or(VmErrorKind::InvalidRegisterRange {
+                start: destination_start,
+                count: destination_count,
+            })?;
+
+        for index in 0..destination_count {
+            let value = if index < source_count {
+                source.get_register_index(runtime, source_start + index)?
+            } else {
+                RawValue::Nil
+            };
+
+            self.set_register_index(runtime, destination_start + index, value)?;
+        }
+
+        Ok(())
+    }
+
+    fn set_open_results_from_frame(
+        &mut self,
+        runtime: &mut Runtime,
+        destination_start: usize,
+        source: &Self,
+        source_start: usize,
+        source_count: usize,
+    ) -> FaultResult<()> {
+        let top = destination_start.checked_add(source_count).ok_or(
+            VmErrorKind::InvalidRegisterRange {
+                start: destination_start,
+                count: source_count,
+            },
+        )?;
+
+        self.ensure_register_capacity(top)?;
+
+        for index in 0..source_count {
+            let value = source.get_register_index(runtime, source_start + index)?;
+            self.set_register_index(runtime, destination_start + index, value)?;
+        }
+
+        self.registers.truncate(self.declared_registers.max(top));
+        self.open_results = Some(OpenExtent {
+            base: destination_start,
+            top,
+        });
 
         Ok(())
     }

@@ -173,7 +173,7 @@ fn repl_errors_skip_the_source_report() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("<stdin>:1:8 (pc 2): in main chunk"),
+        stderr.contains("<stdin>:1:8 (pc 1): in main chunk"),
         "{stderr}"
     );
     assert!(!stderr.contains('╭'), "{stderr}");

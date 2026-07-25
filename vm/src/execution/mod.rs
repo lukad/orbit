@@ -28,7 +28,7 @@ pub(crate) use activation::{
     ReturnTarget,
 };
 
-pub(crate) use frame::{CallFrame, offset_register};
+pub(crate) use frame::{CallFrame, CallFrameStorage, offset_register};
 
 use self::native::NativeStep;
 
@@ -36,6 +36,8 @@ pub(crate) struct Execution<'runtime> {
     runtime: &'runtime mut Runtime,
     stack: Vec<Activation>,
     tail_arguments: Vec<RawValue>,
+    // Shallow repeated calls can reuse their callee's register allocation.
+    spare_lua_frame: Option<CallFrameStorage>,
 }
 
 impl<'runtime> Execution<'runtime> {
@@ -153,6 +155,7 @@ impl<'runtime> Execution<'runtime> {
             runtime,
             stack,
             tail_arguments: Vec::new(),
+            spare_lua_frame: None,
         })
     }
 
@@ -195,6 +198,20 @@ impl<'runtime> Execution<'runtime> {
             };
 
             match boundary {
+                FrameBoundary::Call {
+                    base,
+                    arguments,
+                    results,
+                } => {
+                    if let Err(kind) = self.push_instruction_call(base, arguments, results) {
+                        match self.route_error(VmError::from(kind)) {
+                            Ok(()) => continue,
+                            Err(error) => {
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
                 FrameBoundary::Invoke {
                     callee,
                     arguments,
@@ -221,10 +238,26 @@ impl<'runtime> Execution<'runtime> {
                         }
                     }
                 }
-                FrameBoundary::Return { values } => {
+                FrameBoundary::Return { base, values } => {
+                    match self.return_from_lua(base, values) {
+                        Ok(Some(values)) => {
+                            return Ok(self.returned(values));
+                        }
+                        Ok(None) => {}
+                        Err(kind) => match self.route_error(VmError::from(kind)) {
+                            Ok(()) => continue,
+                            Err(error) => {
+                                return Err(error);
+                            }
+                        },
+                    }
+                }
+                FrameBoundary::ReturnOwned { values } => {
                     let activation = self.stack.pop().expect("returning activation is active");
+                    let target = activation.return_to();
+                    self.recycle_lua_activation(activation);
 
-                    match self.deliver_return(activation.return_to(), values) {
+                    match self.deliver_return(target, values) {
                         Ok(Some(values)) => {
                             return Ok(self.returned(values));
                         }
@@ -260,7 +293,7 @@ impl<'runtime> Execution<'runtime> {
     }
 
     fn build_callable_activation(
-        &self,
+        &mut self,
         callee: RawValue,
         arguments: Box<[RawValue]>,
         return_to: Option<ReturnTarget>,
@@ -271,7 +304,8 @@ impl<'runtime> Execution<'runtime> {
 
         match snapshot {
             FunctionSnapshot::Lua(invocation) => {
-                let frame = CallFrame::new(invocation, &arguments)?;
+                let storage = self.spare_lua_frame.take().unwrap_or_default();
+                let frame = CallFrame::new_reusing(invocation, &arguments, storage)?;
                 Ok(Activation::Lua(match return_to {
                     Some(target) => LuaActivation::called(frame, target),
                     None => LuaActivation::entry(frame),
@@ -284,6 +318,76 @@ impl<'runtime> Execution<'runtime> {
         }
     }
 
+    fn push_instruction_call(
+        &mut self,
+        base: orbit_compiler::bytecode::Register,
+        arguments: orbit_compiler::bytecode::Count,
+        results: orbit_compiler::bytecode::Count,
+    ) -> FaultResult<()> {
+        let target = ResultTarget::Call {
+            base: usize::from(base.0),
+            results,
+        };
+        let (callee, argument_start, argument_count) = self
+            .active_lua_frame()
+            .call_register_range(&*self.runtime, base, arguments)?;
+
+        if let RawValue::Function(function) = callee {
+            match self.runtime.function_snapshot(function)? {
+                FunctionSnapshot::Lua(invocation) => {
+                    let storage = self.spare_lua_frame.take().unwrap_or_default();
+                    let frame = CallFrame::new_from_frame(
+                        invocation,
+                        &*self.runtime,
+                        self.active_lua_frame(),
+                        argument_start,
+                        argument_count,
+                        storage,
+                    )?;
+
+                    self.active_lua_frame_mut()
+                        .consume_open_call_arguments(arguments);
+
+                    return self.push_activation(Activation::Lua(LuaActivation::called(
+                        frame,
+                        ReturnTarget::Lua(target),
+                    )));
+                }
+                FunctionSnapshot::Native(invocation) => {
+                    let (_, arguments) = {
+                        let runtime = &*self.runtime;
+
+                        self.stack
+                            .last_mut()
+                            .and_then(Activation::as_lua_mut)
+                            .expect("active activation is Lua")
+                            .frame_mut()
+                            .collect_call(runtime, base, arguments)?
+                    };
+
+                    return self.push_activation(Activation::Native(NativeActivation::called(
+                        invocation,
+                        arguments,
+                        ReturnTarget::Lua(target),
+                    )));
+                }
+            }
+        }
+
+        let (callee, arguments) = {
+            let runtime = &*self.runtime;
+
+            self.stack
+                .last_mut()
+                .and_then(Activation::as_lua_mut)
+                .expect("active activation is Lua")
+                .frame_mut()
+                .collect_call(runtime, base, arguments)?
+        };
+
+        self.push_callable(callee, arguments, ReturnTarget::Lua(target))
+    }
+
     fn push_callable(
         &mut self,
         callee: RawValue,
@@ -291,6 +395,10 @@ impl<'runtime> Execution<'runtime> {
         return_to: ReturnTarget,
     ) -> FaultResult<()> {
         let activation = self.build_callable_activation(callee, arguments, Some(return_to))?;
+        self.push_activation(activation)
+    }
+
+    fn push_activation(&mut self, activation: Activation) -> FaultResult<()> {
         let requested = self.stack.len().saturating_add(1);
 
         self.stack
@@ -421,6 +529,70 @@ impl<'runtime> Execution<'runtime> {
         }
 
         Ok(None)
+    }
+
+    fn return_from_lua(
+        &mut self,
+        base: orbit_compiler::bytecode::Register,
+        values: orbit_compiler::bytecode::Count,
+    ) -> FaultResult<Option<Box<[RawValue]>>> {
+        let target = self
+            .stack
+            .last()
+            .expect("returning activation is active")
+            .return_to();
+
+        match target {
+            Some(ReturnTarget::Lua(target)) => {
+                let callee_index = self.stack.len() - 1;
+                let (callers, callees) = self.stack.split_at_mut(callee_index);
+                let caller = callers.last_mut().and_then(Activation::as_lua_mut).ok_or(
+                    VmErrorKind::InvalidNativeContinuation {
+                        message: "Lua return target has no Lua caller",
+                    },
+                )?;
+                let callee = callees[0]
+                    .as_lua()
+                    .expect("only Lua activations produce Return boundaries");
+
+                caller.frame_mut().accept_results_from_frame(
+                    &mut *self.runtime,
+                    target,
+                    callee.frame(),
+                    base,
+                    values,
+                )?;
+
+                let activation = self.stack.pop().expect("returning activation is active");
+                self.recycle_lua_activation(activation);
+
+                Ok(None)
+            }
+            target => {
+                let values = {
+                    let runtime = &*self.runtime;
+
+                    self.stack
+                        .last_mut()
+                        .and_then(Activation::as_lua_mut)
+                        .expect("active activation is Lua")
+                        .frame_mut()
+                        .collect_return(runtime, base, values)?
+                };
+                let activation = self.stack.pop().expect("returning activation is active");
+                self.recycle_lua_activation(activation);
+
+                self.deliver_return(target, values)
+            }
+        }
+    }
+
+    fn recycle_lua_activation(&mut self, activation: Activation) {
+        let Activation::Lua(activation) = activation else {
+            unreachable!("only Lua activations produce Return boundaries");
+        };
+
+        self.spare_lua_frame = Some(activation.into_frame().into_storage());
     }
 
     fn route_error(&mut self, mut error: VmError) -> Result<(), VmError> {

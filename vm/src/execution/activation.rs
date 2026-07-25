@@ -60,6 +60,13 @@ impl NativeResultMode {
 }
 
 pub(crate) enum FrameBoundary {
+    /// Defers operand collection so a direct Lua callee can copy from the
+    /// caller's register window without allocating an argument buffer.
+    Call {
+        base: Register,
+        arguments: Count,
+        results: Count,
+    },
     Invoke {
         callee: RawValue,
         arguments: Box<[RawValue]>,
@@ -70,6 +77,11 @@ pub(crate) enum FrameBoundary {
         arguments: Vec<RawValue>,
     },
     Return {
+        base: Register,
+        values: Count,
+    },
+    /// Cleanup returns snapshot their values before closing captured locals.
+    ReturnOwned {
         values: Box<[RawValue]>,
     },
 }
@@ -163,6 +175,10 @@ impl LuaActivation {
 
     pub(crate) fn return_to(&self) -> Option<ReturnTarget> {
         self.return_to
+    }
+
+    pub(crate) fn into_frame(self) -> CallFrame {
+        self.frame
     }
 
     pub(crate) fn visit_roots(&self, visit: impl FnMut(ObjectId)) {

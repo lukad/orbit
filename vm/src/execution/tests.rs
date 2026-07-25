@@ -175,6 +175,30 @@ fn executes_varargs_and_open_results() {
 }
 
 #[test]
+fn lua_calls_transfer_open_arguments_and_results_between_frames() {
+    assert_run(
+        r#"
+            local function produce()
+                return 10, nil, 30
+            end
+
+            local function consume(prefix, ...)
+                local first, second, third = ...
+                return prefix + first, second, third
+            end
+
+            local function invoke()
+                local first, second, third = consume(2, produce())
+                return first, second, third
+            end
+
+            return invoke()
+        "#,
+        &[RawValue::Integer(12), RawValue::Nil, RawValue::Integer(30)],
+    );
+}
+
+#[test]
 fn tail_calls_forward_all_results_to_the_original_lua_target() {
     assert_run(
         r#"

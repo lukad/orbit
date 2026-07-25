@@ -19,24 +19,10 @@ impl Execution<'_> {
         arguments: Count,
         results: Count,
     ) -> FaultResult<FrameBoundary> {
-        let (callee, arguments) = {
-            let runtime = &*self.runtime;
-
-            self.stack
-                .last_mut()
-                .and_then(Activation::as_lua_mut)
-                .expect("active activation is Lua")
-                .frame_mut()
-                .collect_call(runtime, base, arguments)?
-        };
-
-        Ok(FrameBoundary::Invoke {
-            callee,
+        Ok(FrameBoundary::Call {
+            base,
             arguments,
-            target: ResultTarget::Call {
-                base: usize::from(base.0),
-                results,
-            },
+            results,
         })
     }
 
@@ -199,19 +185,15 @@ impl Execution<'_> {
         values: Count,
         close_from: Option<Register>,
     ) -> FaultResult<FrameBoundary> {
-        let values = {
+        if let Some(close_from) = close_from {
             let runtime = &*self.runtime;
-
-            self.stack
+            let values = self
+                .stack
                 .last_mut()
                 .and_then(Activation::as_lua_mut)
                 .expect("active activation is Lua")
                 .frame_mut()
-                .collect_return(runtime, base, values)?
-        };
-
-        if let Some(close_from) = close_from {
-            let runtime = &*self.runtime;
+                .collect_return(runtime, base, values)?;
 
             self.stack
                 .last_mut()
@@ -219,9 +201,11 @@ impl Execution<'_> {
                 .expect("active activation is Lua")
                 .frame_mut()
                 .close_upvalues_from(runtime, close_from)?;
+
+            return Ok(FrameBoundary::ReturnOwned { values });
         }
 
-        Ok(FrameBoundary::Return { values })
+        Ok(FrameBoundary::Return { base, values })
     }
 
     pub(super) fn generic_for_call(
