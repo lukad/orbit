@@ -81,6 +81,33 @@ fn assert_sub_error(error: VmError, expected: &str) {
     ));
 }
 
+fn call_rep(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(rep) = state.raw_get(&string_library, &string("rep"))? else {
+        panic!("string.rep was not installed as a function");
+    };
+
+    match state.call(&rep, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.rep unexpectedly yielded"),
+    }
+}
+
+fn assert_rep_error(error: VmError, expected: &str) {
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: expected.into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.rep"
+    ));
+}
+
 #[test]
 fn install_registers_string_sub() {
     let mut state = installed_state();
@@ -224,6 +251,155 @@ fn invalid_indices_report_lua_argument_errors() {
     for (arguments, expected) in cases {
         let error = call_sub(&mut state, &arguments).unwrap_err();
         assert_sub_error(error, expected);
+    }
+}
+
+#[test]
+fn install_registers_string_rep() {
+    let mut state = installed_state();
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+
+    assert!(matches!(
+        state.raw_get(&string_library, &string("rep")).unwrap(),
+        Value::Function(_)
+    ));
+}
+
+#[test]
+fn rep_repeats_the_string_and_treats_non_positive_counts_as_empty() {
+    let mut state = installed_state();
+
+    for (arguments, expected) in [
+        (vec![string("ab"), Value::Integer(3)], "ababab"),
+        (vec![string("ab"), Value::Integer(1)], "ab"),
+        (vec![string("ab"), Value::Integer(0)], ""),
+        (vec![string("ab"), Value::Integer(-4)], ""),
+        (vec![string(""), Value::Integer(5)], ""),
+        (vec![string("ab"), Value::Float(2.0)], "abab"),
+    ] {
+        assert_eq!(
+            call_rep(&mut state, &arguments).unwrap(),
+            vec![string(expected)]
+        );
+    }
+}
+
+#[test]
+fn rep_inserts_the_separator_between_copies_only() {
+    let mut state = installed_state();
+
+    for (arguments, expected) in [
+        (
+            vec![string("ab"), Value::Integer(3), string("-")],
+            "ab-ab-ab",
+        ),
+        (vec![string("ab"), Value::Integer(1), string("-")], "ab"),
+        (vec![string("ab"), Value::Integer(3), string("")], "ababab"),
+        (vec![string("ab"), Value::Integer(3), Value::Nil], "ababab"),
+        (
+            vec![string("ab"), Value::Integer(2), string("---")],
+            "ab---ab",
+        ),
+    ] {
+        assert_eq!(
+            call_rep(&mut state, &arguments).unwrap(),
+            vec![string(expected)]
+        );
+    }
+}
+
+#[test]
+fn rep_coerces_numbers_to_strings() {
+    let mut state = installed_state();
+
+    for (arguments, expected) in [
+        (
+            vec![Value::Integer(12), Value::Integer(3), Value::Integer(0)],
+            "12012012",
+        ),
+        (vec![Value::Float(1.5), Value::Integer(2)], "1.51.5"),
+        (
+            vec![string("ab"), Value::Integer(2), Value::Float(2.0)],
+            "ab2.0ab",
+        ),
+    ] {
+        assert_eq!(
+            call_rep(&mut state, &arguments).unwrap(),
+            vec![string(expected)]
+        );
+    }
+}
+
+#[test]
+fn rep_preserves_arbitrary_byte_data() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        call_rep(
+            &mut state,
+            &[
+                string([0xff, 0x00, b'a']),
+                Value::Integer(2),
+                string([0xc3, 0xa9])
+            ]
+        )
+        .unwrap(),
+        vec![string([0xff, 0x00, b'a', 0xc3, 0xa9, 0xff, 0x00, b'a'])]
+    );
+}
+
+#[test]
+fn rep_reports_lua_argument_errors() {
+    let mut state = installed_state();
+    let cases = [
+        (
+            vec![],
+            "bad argument #1 to 'rep' (string expected, got no value)",
+        ),
+        (
+            vec![Value::Boolean(true), Value::Integer(1)],
+            "bad argument #1 to 'rep' (string expected, got boolean)",
+        ),
+        (
+            vec![string("ab")],
+            "bad argument #2 to 'rep' (number expected, got no value)",
+        ),
+        (
+            vec![string("ab"), Value::Boolean(true)],
+            "bad argument #2 to 'rep' (number expected, got boolean)",
+        ),
+        (
+            vec![string("ab"), Value::Float(1.5)],
+            "bad argument #2 to 'rep' (number has no integer representation)",
+        ),
+        (
+            vec![string("ab"), Value::Integer(2), Value::Boolean(true)],
+            "bad argument #3 to 'rep' (string expected, got boolean)",
+        ),
+    ];
+
+    for (arguments, expected) in cases {
+        let error = call_rep(&mut state, &arguments).unwrap_err();
+        assert_rep_error(error, expected);
+    }
+}
+
+#[test]
+fn rep_rejects_results_that_are_too_large() {
+    let mut state = installed_state();
+
+    for arguments in [
+        // The multiplication overflows usize.
+        vec![string("abc"), Value::Integer(i64::MAX)],
+        // The total fits usize but exceeds the maximum allocation size.
+        vec![string("ab"), Value::Integer(i64::MAX)],
+        // A separator contributes to the total length.
+        vec![string("ab"), Value::Integer(i64::MAX), string("-")],
+    ] {
+        let error = call_rep(&mut state, &arguments).unwrap_err();
+        assert_rep_error(error, "resulting string too large");
     }
 }
 

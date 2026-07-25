@@ -6,6 +6,7 @@ mod pack;
 mod packing;
 mod packsize;
 mod pattern;
+mod rep;
 mod sub;
 mod unpack;
 
@@ -52,6 +53,9 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
         format::FUNCTION_NAME,
         &Value::Function(format),
     )?;
+
+    let rep = state.create_native_function("string.rep", rep::callback, &[])?;
+    set_field(state, &string, rep::FUNCTION, &Value::Function(rep))?;
 
     let find = state.create_native_function("string.find", find::callback, &[])?;
     set_field(state, &string, find::FUNCTION, &Value::Function(find))?;
