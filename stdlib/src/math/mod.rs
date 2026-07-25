@@ -1,4 +1,5 @@
 mod extrema;
+mod fmod;
 mod max;
 mod min;
 mod tointeger;
@@ -18,6 +19,9 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
 
     let tointeger = state.create_native_function("math.tointeger", tointeger::callback, &[])?;
     set_field(state, &math, b"tointeger", &Value::Function(tointeger))?;
+
+    let fmod = state.create_native_function("math.fmod", fmod::callback, &[])?;
+    set_field(state, &math, fmod::FUNCTION, &Value::Function(fmod))?;
 
     set_field(state, &math, b"mininteger", &Value::Integer(i64::MIN))?;
     set_field(state, &math, b"maxinteger", &Value::Integer(i64::MAX))?;

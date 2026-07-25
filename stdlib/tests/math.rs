@@ -318,3 +318,185 @@ fn tointeger_reports_a_missing_value() {
         Some(VmTraceFrame::Native { name }) if name.as_ref() == "math.tointeger"
     ));
 }
+
+#[test]
+fn fmod_returns_truncating_integer_remainder_for_integer_arguments() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.fmod(10, 3),
+                math.fmod(-5, 3),
+                math.fmod(5, -3),
+                math.fmod(-5, -3),
+                math.fmod(0, 7),
+                math.fmod(7, 1),
+                math.fmod(7, -1),
+                math.fmod(math.mininteger, math.mininteger),
+                math.fmod(math.maxinteger, math.maxinteger),
+                math.fmod(math.mininteger + 1, math.mininteger),
+                math.fmod(math.maxinteger - 1, math.maxinteger)
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(1),
+            Value::Integer(-2),
+            Value::Integer(2),
+            Value::Integer(-2),
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::Integer(i64::MIN + 1),
+            Value::Integer(i64::MAX - 1),
+        ]
+    );
+}
+
+#[test]
+fn fmod_returns_float_remainder_when_any_argument_is_a_float() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.fmod(10.0, 3),
+                math.fmod(10, 3.0),
+                math.fmod(-5.5, 2),
+                math.fmod(5.5, -2),
+                math.fmod(1.0, 1 / 0)
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Float(1.0),
+            Value::Float(1.0),
+            Value::Float(-1.5),
+            Value::Float(1.5),
+            Value::Float(1.0),
+        ]
+    );
+}
+
+#[test]
+fn fmod_returns_nan_for_indeterminate_float_operations() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local by_zero = math.fmod(3.0, 0.0)
+            local nan_dividend = math.fmod(0.0 / 0.0, 1)
+            return by_zero ~= by_zero, nan_dividend ~= nan_dividend
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(values, vec![Value::Boolean(true), Value::Boolean(true)]);
+}
+
+#[test]
+fn fmod_coerces_numeric_strings_preserving_int_or_float_kind() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.fmod("7", "2"),
+                math.fmod("10", 3),
+                math.fmod(10, "4"),
+                math.fmod("7.5", "2"),
+                math.fmod(10, "4.0")
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Float(1.5),
+            Value::Float(2.0),
+        ]
+    );
+}
+
+#[test]
+fn fmod_reports_missing_and_non_numeric_arguments() {
+    let mut state = installed_state();
+
+    let missing_dividend = execute(&mut state, "return math.fmod()").unwrap_err();
+    assert_eq!(
+        missing_dividend.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #1 to 'fmod' (number expected, got no value)".into(),
+        }
+    );
+    assert!(matches!(
+        missing_dividend.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "math.fmod"
+    ));
+
+    let missing_divisor = execute(&mut state, "return math.fmod(1)").unwrap_err();
+    assert_eq!(
+        missing_divisor.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #2 to 'fmod' (number expected, got no value)".into(),
+        }
+    );
+
+    let table_dividend = execute(&mut state, "return math.fmod({}, 2)").unwrap_err();
+    assert_eq!(
+        table_dividend.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #1 to 'fmod' (number expected, got table)".into(),
+        }
+    );
+
+    let string_divisor = execute(&mut state, "return math.fmod(1, 'nope')").unwrap_err();
+    assert_eq!(
+        string_divisor.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #2 to 'fmod' (number expected, got string)".into(),
+        }
+    );
+}
+
+#[test]
+fn fmod_rejects_an_integer_zero_divisor() {
+    let mut state = installed_state();
+
+    let error = execute(&mut state, "return math.fmod(3, 0)").unwrap_err();
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: "bad argument #2 to 'fmod' (zero)".into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "math.fmod"
+    ));
+}
+
+#[test]
+fn fmod_handles_mininteger_remainder_minus_one_without_overflow() {
+    let mut state = installed_state();
+
+    let values = execute(&mut state, "return math.fmod(math.mininteger, -1)").unwrap();
+    assert_eq!(values, vec![Value::Integer(0)]);
+}
