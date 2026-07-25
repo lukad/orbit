@@ -163,7 +163,7 @@ lua54_runtime_tests! {
     ignored runtime_gengc => "gengc.lua",
     ignored runtime_locals => "locals.lua",
     ignored runtime_constructs => "constructs.lua",
-    ignored runtime_code => "code.lua",
+    enabled runtime_code => "code.lua",
     ignored runtime_big => "big.lua",
     ignored runtime_cstack => "cstack.lua",
     ignored runtime_nextvar => "nextvar.lua",
