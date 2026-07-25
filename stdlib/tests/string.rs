@@ -1337,6 +1337,17 @@ fn arithmetic_coerces_numeric_strings() {
             Value::Integer(-9),
         ]
     );
+
+    assert_eq!(
+        execute_string_test(r#"return -"10", -"10.5", -" -0xa ""#).unwrap(),
+        vec![Value::Integer(-10), Value::Float(-10.5), Value::Integer(10),]
+    );
+
+    let error = execute_string_test(r#"return -"not numeric""#).unwrap_err();
+    assert_eq!(
+        error.kind,
+        VmErrorKind::InvalidNegateOperand { kind: "string" }
+    );
 }
 
 #[test]

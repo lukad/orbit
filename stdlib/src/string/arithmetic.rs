@@ -91,3 +91,17 @@ fn start(
         Ok(_) => unreachable!("unconverted operands unexpectedly supported arithmetic"),
     }
 }
+
+pub(crate) fn negate(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    let operand = context.argument(0).unwrap_or_default();
+
+    let Some(number) = operand.to_number() else {
+        return match context.raw_negate(&operand) {
+            Err(error) => Err(error),
+            Ok(_) => unreachable!("unconverted operand unexpectedly supported negation"),
+        };
+    };
+
+    let result = context.raw_negate(&number)?;
+    Ok(context.return_values([result]))
+}

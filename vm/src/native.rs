@@ -250,6 +250,7 @@ pub(crate) trait NativeServices {
         left: &RawValue,
         right: &RawValue,
     ) -> VmResult<RawValue>;
+    fn raw_negate(&mut self, operand: &RawValue) -> VmResult<RawValue>;
 }
 
 pub struct NativeContext<'context> {
@@ -680,6 +681,10 @@ impl<'context> NativeContext<'context> {
         self.services
             .raw_arithmetic(operation, left.raw(), right.raw())
             .map(LocalValue::new)
+    }
+
+    pub fn raw_negate(&mut self, operand: &LocalValue<'context>) -> VmResult<LocalValue<'context>> {
+        self.services.raw_negate(operand.raw()).map(LocalValue::new)
     }
 }
 

@@ -61,7 +61,7 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
     let find = state.create_native_function("string.find", find::callback, &[])?;
     set_field(state, &string, find::FUNCTION, &Value::Function(find))?;
 
-    let metatable = state.create_table(0, 8)?;
+    let metatable = state.create_table(0, 9)?;
     set_field(state, &metatable, b"__index", &Value::Table(string.clone()))?;
 
     let arithemtic_metamethods: [(&[u8], &'static str, NativeCallback); 7] = [
@@ -73,10 +73,14 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
         (b"__mod", "string.__mod", arithmetic::modulo),
         (b"__pow", "string.__pow", arithmetic::power),
     ];
+
     for (name, function_name, callback) in arithemtic_metamethods.into_iter() {
         let function = state.create_native_function(function_name, callback, &[])?;
         set_field(state, &metatable, name, &Value::Function(function))?;
     }
+
+    let negate = state.create_native_function("string.__unm", arithmetic::negate, &[])?;
+    set_field(state, &metatable, b"__unm", &Value::Function(negate))?;
 
     state.set_metatable(&Value::String(LuaString::new(b"")), Some(&metatable))?;
 

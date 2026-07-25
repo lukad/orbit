@@ -1,4 +1,4 @@
-use orbit_compiler::bytecode::BinaryOp;
+use orbit_compiler::bytecode::{BinaryOp, UnaryOp};
 
 use crate::{
     error::{VmError, VmErrorKind, VmResult},
@@ -441,5 +441,9 @@ impl NativeServices for ExecutionNativeServices<'_> {
         };
 
         semantics::binary(operation, left, right).map_err(VmError::from)
+    }
+
+    fn raw_negate(&mut self, operand: &RawValue) -> VmResult<RawValue> {
+        semantics::unary(UnaryOp::Negate, operand).map_err(VmError::from)
     }
 }
