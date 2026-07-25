@@ -177,7 +177,7 @@ lua54_runtime_tests! {
     ignored runtime_errors => "errors.lua",
     ignored runtime_math => "math.lua",
     ignored runtime_sort => "sort.lua",
-    ignored runtime_bitwise => "bitwise.lua",
+    enabled runtime_bitwise => "bitwise.lua",
     ignored runtime_verybig => "verybig.lua",
     ignored runtime_files => "files.lua",
 }
