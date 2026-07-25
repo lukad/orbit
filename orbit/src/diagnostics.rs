@@ -110,9 +110,19 @@ fn escape_invalid_utf8(source: &[u8]) -> (String, Box<[usize]>) {
 }
 
 pub(crate) fn print_runtime_error(error: &VmError, sources: &SourceMap) {
+    print_error(error, sources, true);
+}
+
+/// Prints the error without the ariadne source report, for contexts where the
+/// failing code is already visible (the interactive REPL).
+pub(crate) fn print_runtime_error_plain(error: &VmError, sources: &SourceMap) {
+    print_error(error, sources, false);
+}
+
+fn print_error(error: &VmError, sources: &SourceMap, render_report: bool) {
     match &error.kind {
         VmErrorKind::LoadFailure(load_error) => {
-            print_load_error(load_error, sources);
+            print_load_error(load_error, sources, render_report);
         }
         _ => {
             let message = error.message();
@@ -126,7 +136,9 @@ pub(crate) fn print_runtime_error(error: &VmError, sources: &SourceMap) {
                 VmTraceFrame::Native { .. } => None,
             });
 
-            if span.is_none_or(|span| !print_diagnostic(span, &message, sources)) {
+            let reported =
+                render_report && span.is_some_and(|span| print_diagnostic(span, &message, sources));
+            if !reported {
                 eprintln!("{message}");
             }
         }
@@ -182,32 +194,50 @@ fn print_trace_frame(frame: &VmTraceFrame, sources: &SourceMap) {
     }
 }
 
-fn print_load_error(error: &LoadError, sources: &SourceMap) {
+fn print_load_error(error: &LoadError, sources: &SourceMap, render_report: bool) {
     match error {
-        LoadError::InvalidUtf8 { span } => print_load_diagnostic(*span, error, sources),
-        LoadError::Lex(error) => print_load_diagnostic(error.span, error, sources),
-        LoadError::Parse(error) => print_load_diagnostic(error.span, error, sources),
+        LoadError::InvalidUtf8 { span } => {
+            print_load_diagnostic(*span, error, sources, render_report)
+        }
+        LoadError::Lex(error) => print_load_diagnostic(error.span, error, sources, render_report),
+        LoadError::Parse(error) => print_load_diagnostic(error.span, error, sources, render_report),
         LoadError::Resolve { diagnostics } => {
             for diagnostic in diagnostics {
-                print_load_diagnostic(diagnostic.span, diagnostic, sources);
+                print_load_diagnostic(diagnostic.span, diagnostic, sources, render_report);
             }
         }
-        LoadError::Compile(error) => print_load_diagnostic(error.span, error, sources),
-        error => match error.source_id() {
-            Some(source_id) => eprintln!("[source {}]: {error}", source_id.get()),
-            None => eprintln!("{error}"),
+        LoadError::Compile(error) => {
+            print_load_diagnostic(error.span, error, sources, render_report);
+        }
+        error => match (render_report, error.source_id()) {
+            (true, Some(source_id)) => eprintln!("[source {}]: {error}", source_id.get()),
+            _ => eprintln!("{error}"),
         },
     }
 }
 
-fn print_load_diagnostic(span: Span, message: impl std::fmt::Display, sources: &SourceMap) {
-    if !print_diagnostic(span, &message, sources) {
+fn print_load_diagnostic(
+    span: Span,
+    message: impl std::fmt::Display,
+    sources: &SourceMap,
+    render_report: bool,
+) {
+    if render_report && print_diagnostic(span, &message, sources) {
+        return;
+    }
+
+    if let Some(source) = sources.get(span.source) {
+        let (line, column) = line_column(&source.text, span.start);
+        eprintln!("{}:{line}:{column}: {message}", source.name);
+    } else if render_report {
         eprintln!(
             "[source {} bytes {}..{}]: {message}",
             span.source.get(),
             span.start,
             span.end,
         );
+    } else {
+        eprintln!("{message}");
     }
 }
 

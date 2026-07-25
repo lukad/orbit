@@ -21,7 +21,7 @@ use self::history::{ReplHistory, decode_entry};
 use self::indent::{
     AutoDedent, configure_auto_dedent, normalize_closing_line, suggested_indentation,
 };
-use crate::diagnostics::{SharedSources, print_runtime_error};
+use crate::diagnostics::{SharedSources, print_runtime_error_plain};
 
 type ReplEditor = Editor<ReplHelper, ReplHistory>;
 
@@ -54,7 +54,7 @@ pub(crate) fn run(state: &mut State, sources: &SharedSources) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Err(error) => {
-            print_runtime_error(&error, &sources.borrow());
+            print_runtime_error_plain(&error, &sources.borrow());
             return ExitCode::FAILURE;
         }
     };
@@ -88,7 +88,7 @@ pub(crate) fn run(state: &mut State, sources: &SharedSources) -> ExitCode {
                     remember_history(&mut editor, history_path.as_deref(), &source);
                 }
                 if let Some(error) = incomplete_error {
-                    print_runtime_error(&error, &sources.borrow());
+                    print_runtime_error_plain(&error, &sources.borrow());
                 }
                 break;
             }
@@ -124,7 +124,7 @@ pub(crate) fn run(state: &mut State, sources: &SharedSources) -> ExitCode {
             Compilation::Invalid(error) => {
                 incomplete_error = None;
                 remember_history(&mut editor, history_path.as_deref(), &source);
-                print_runtime_error(&error, &sources.borrow());
+                print_runtime_error_plain(&error, &sources.borrow());
                 source.clear();
                 continue;
             }
@@ -140,7 +140,7 @@ pub(crate) fn run(state: &mut State, sources: &SharedSources) -> ExitCode {
                 continue;
             }
             Err(error) => {
-                print_runtime_error(&error, &sources.borrow());
+                print_runtime_error_plain(&error, &sources.borrow());
                 continue;
             }
         };
@@ -155,7 +155,7 @@ pub(crate) fn run(state: &mut State, sources: &SharedSources) -> ExitCode {
                 eprintln!("print unexpectedly yielded");
             }
             Err(error) => {
-                print_runtime_error(&error, &sources.borrow());
+                print_runtime_error_plain(&error, &sources.borrow());
             }
         }
     }

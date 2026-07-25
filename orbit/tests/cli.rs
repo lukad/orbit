@@ -159,7 +159,25 @@ fn repl_reports_an_incomplete_chunk_when_input_ends() {
     assert!(output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("expected End, but found Some(Eof)"));
-    assert!(stderr.contains("if true then"));
+    assert!(stderr.contains("<stdin>:1:13"));
+}
+
+#[test]
+fn repl_errors_skip_the_source_report() {
+    let output = run_repl("1 / \"foo\"\n");
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("attempt to divide a number value by a string value"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("<stdin>:1:8 (pc 2): in main chunk"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains('╭'), "{stderr}");
+    assert!(!stderr.contains("return 1 / \"foo\""), "{stderr}");
 }
 
 #[test]
