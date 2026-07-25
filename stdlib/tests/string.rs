@@ -1300,3 +1300,99 @@ fn find_operates_on_raw_bytes() {
         vec![Value::Integer(1), Value::Integer(3), string(b"\0")]
     );
 }
+
+#[test]
+fn arithmetic_coerces_numeric_strings() {
+    let values = execute_string_test(
+        r#"
+            return
+                "2" + 1,
+                1 + "2",
+                "10" - "3",
+                "6" * "7",
+                "7" / "2",
+                "7" // "2",
+                "7.0" // "2",
+                "7" % "3",
+                "2" ^ "3",
+                " 3e0 " + "2",
+                " -0xa " + 1
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(3),
+            Value::Integer(3),
+            Value::Integer(7),
+            Value::Integer(42),
+            Value::Float(3.5),
+            Value::Integer(3),
+            Value::Float(3.0),
+            Value::Integer(1),
+            Value::Float(8.0),
+            Value::Float(5.0),
+            Value::Integer(-9),
+        ]
+    );
+}
+
+#[test]
+fn failed_string_coercion_tries_the_right_metamethod() {
+    let values = execute_string_test(
+        r#"
+            local right
+            right = setmetatable({}, {
+                __add = function(left, actual_right)
+                    assert(left == "not numeric")
+                    assert(actual_right == right)
+                    return 77, 88
+                end,
+            })
+
+            return "not numeric" + right
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(values, vec![Value::Integer(77)]);
+}
+
+#[test]
+fn non_arithmetic_operators_and_invalid_strings_do_not_coerce() {
+    assert_eq!(
+        execute_string_test(r#"return "1" == 1"#).unwrap(),
+        vec![Value::Boolean(false)]
+    );
+
+    let error = execute_string_test(r#"return "3" & 1"#).unwrap_err();
+    assert_eq!(
+        error.kind,
+        VmErrorKind::InvalidBitwiseOperands {
+            operation: "bitwise and",
+            left: "string",
+            right: "number",
+        }
+    );
+
+    let error = execute_string_test(r#"return "1" < 1"#).unwrap_err();
+    assert_eq!(
+        error.kind,
+        VmErrorKind::InvalidComparisonOperands {
+            operation: "<",
+            left: "string",
+            right: "number",
+        }
+    );
+
+    let error = execute_string_test(r#"return "not numeric" + 1"#).unwrap_err();
+    assert_eq!(
+        error.kind,
+        VmErrorKind::InvalidAddOperands {
+            left: "string",
+            right: "number",
+        }
+    );
+}

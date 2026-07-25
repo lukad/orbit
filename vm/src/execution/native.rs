@@ -5,8 +5,11 @@ use crate::{
     execution::operators::ComparisonOutcome,
     id::ObjectId,
     loading::LoadSource,
-    native::{ComparisonOp, NativeActionKind, NativeContext, NativeServices, NativeToken},
+    native::{
+        ArithmeticOp, ComparisonOp, NativeActionKind, NativeContext, NativeServices, NativeToken,
+    },
     runtime::GcMode,
+    semantics,
     value::{RawValue, Value},
 };
 
@@ -419,5 +422,24 @@ impl NativeServices for ExecutionNativeServices<'_> {
 
     fn gc_running(&self) -> bool {
         self.runtime.gc_running()
+    }
+
+    fn raw_arithmetic(
+        &mut self,
+        operation: ArithmeticOp,
+        left: &RawValue,
+        right: &RawValue,
+    ) -> VmResult<RawValue> {
+        let operation = match operation {
+            ArithmeticOp::Add => BinaryOp::Add,
+            ArithmeticOp::Subtract => BinaryOp::Subtract,
+            ArithmeticOp::Multiply => BinaryOp::Multiply,
+            ArithmeticOp::Divide => BinaryOp::Divide,
+            ArithmeticOp::FloorDivide => BinaryOp::FloorDivide,
+            ArithmeticOp::Modulo => BinaryOp::Modulo,
+            ArithmeticOp::Power => BinaryOp::Power,
+        };
+
+        semantics::binary(operation, left, right).map_err(VmError::from)
     }
 }

@@ -151,6 +151,17 @@ impl NativeAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithmeticOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    FloorDivide,
+    Modulo,
+    Power,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonOp {
     Equal,
     LessThan,
@@ -233,6 +244,12 @@ pub(crate) trait NativeServices {
     fn set_gc_running(&mut self, running: bool);
     fn set_gc_mode(&mut self, mode: GcMode) -> GcMode;
     fn gc_running(&self) -> bool;
+    fn raw_arithmetic(
+        &mut self,
+        operation: ArithmeticOp,
+        left: &RawValue,
+        right: &RawValue,
+    ) -> VmResult<RawValue>;
 }
 
 pub struct NativeContext<'context> {
@@ -652,6 +669,17 @@ impl<'context> NativeContext<'context> {
 
     pub fn gc_running(&self) -> bool {
         self.services.gc_running()
+    }
+
+    pub fn raw_arithmetic(
+        &mut self,
+        operation: ArithmeticOp,
+        left: &LocalValue<'context>,
+        right: &LocalValue<'context>,
+    ) -> VmResult<LocalValue<'context>> {
+        self.services
+            .raw_arithmetic(operation, left.raw(), right.raw())
+            .map(LocalValue::new)
     }
 }
 

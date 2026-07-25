@@ -21,7 +21,8 @@ pub use error::{LuaTraceFunction, VmError, VmErrorKind, VmResult, VmTraceFrame};
 pub use handle::{Function, Table};
 pub use loading::{LoadError, LoadService, LoadSource, NoLoadService};
 pub use native::{
-    ComparisonOp, LocalValue, NativeAction, NativeCallback, NativeContext, NativeEvent, NativeToken,
+    ArithmeticOp, ComparisonOp, LocalValue, NativeAction, NativeCallback, NativeContext,
+    NativeEvent, NativeToken,
 };
 pub use runtime::GcMode;
 pub use state::{CallOutcome, State, SuspendedCall};
