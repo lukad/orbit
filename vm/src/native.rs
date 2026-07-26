@@ -251,6 +251,11 @@ pub(crate) trait NativeServices {
         right: &RawValue,
     ) -> VmResult<RawValue>;
     fn raw_negate(&mut self, operand: &RawValue) -> VmResult<RawValue>;
+    fn function_upvalue_id(
+        &mut self,
+        function: &RawValue,
+        index: usize,
+    ) -> VmResult<Option<RawValue>>;
 }
 
 pub struct NativeContext<'context> {
@@ -591,6 +596,9 @@ impl<'context> NativeContext<'context> {
 
                 LuaString::from(bytes)
             }
+            RawValue::LightUserdata(value) => {
+                LuaString::from(format!("userdata: {}", value.format_pointer()).into_bytes())
+            }
         };
 
         LocalValue::new(RawValue::String(string))
@@ -606,6 +614,7 @@ impl<'context> NativeContext<'context> {
                     .expect("tables and functions have object identities");
                 format!("0x{:08x}{:08x}", object.slot(), object.generation())
             }
+            RawValue::LightUserdata(value) => value.format_pointer(),
             RawValue::Nil | RawValue::Boolean(_) | RawValue::Integer(_) | RawValue::Float(_) => {
                 "(null)".to_owned()
             }
@@ -685,6 +694,16 @@ impl<'context> NativeContext<'context> {
 
     pub fn raw_negate(&mut self, operand: &LocalValue<'context>) -> VmResult<LocalValue<'context>> {
         self.services.raw_negate(operand.raw()).map(LocalValue::new)
+    }
+
+    pub fn function_upvalue_id(
+        &mut self,
+        function: &LocalValue<'context>,
+        index: usize,
+    ) -> VmResult<Option<LocalValue<'context>>> {
+        self.services
+            .function_upvalue_id(function.raw(), index)
+            .map(|result| result.map(LocalValue::new))
     }
 }
 

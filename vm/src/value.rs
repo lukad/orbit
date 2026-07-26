@@ -1,8 +1,60 @@
 use crate::{
     handle::{Function, Table},
-    id::{FunctionId, ObjectId, TableId},
+    id::{FunctionId, ObjectId, StateId, TableId, UpvalueId},
     string::LuaString,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum LightUserdataIdentity {
+    LuaUpvalue(UpvalueId),
+    NativeUpvalue { function: FunctionId, index: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LightUserdata {
+    state: StateId,
+    identity: LightUserdataIdentity,
+}
+
+impl LightUserdata {
+    pub(crate) const fn lua_upvalue(state: StateId, upvalue: UpvalueId) -> Self {
+        Self {
+            state,
+            identity: LightUserdataIdentity::LuaUpvalue(upvalue),
+        }
+    }
+
+    pub(crate) const fn native_upvalue(state: StateId, function: FunctionId, index: u32) -> Self {
+        Self {
+            state,
+            identity: LightUserdataIdentity::NativeUpvalue { function, index },
+        }
+    }
+
+    pub(crate) fn format_pointer(self) -> String {
+        match self.identity {
+            LightUserdataIdentity::LuaUpvalue(upvalue) => {
+                let object = upvalue.object();
+                format!(
+                    "0x01{:016x}{:08x}{:08x}",
+                    self.state.get(),
+                    object.slot(),
+                    object.generation()
+                )
+            }
+            LightUserdataIdentity::NativeUpvalue { function, index } => {
+                let object = function.object();
+                format!(
+                    "0x02{:016x}{:08x}{:08x}{:08x}",
+                    self.state.get(),
+                    object.slot(),
+                    object.generation(),
+                    index
+                )
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum Value {
@@ -14,6 +66,7 @@ pub enum Value {
     String(LuaString),
     Table(Table),
     Function(Function),
+    LightUserdata(LightUserdata),
 }
 
 impl Value {
@@ -25,6 +78,7 @@ impl Value {
             Self::String(_) => "string",
             Self::Table(_) => "table",
             Self::Function(_) => "function",
+            Self::LightUserdata(_) => "userdata",
         }
     }
 
@@ -47,6 +101,7 @@ pub enum RawValue {
     String(LuaString),
     Table(TableId),
     Function(FunctionId),
+    LightUserdata(LightUserdata),
 }
 
 impl RawValue {
@@ -58,6 +113,7 @@ impl RawValue {
             Self::String(_) => "string",
             Self::Table(_) => "table",
             Self::Function(_) => "function",
+            Self::LightUserdata(_) => "userdata",
         }
     }
 

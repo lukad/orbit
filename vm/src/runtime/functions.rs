@@ -12,7 +12,7 @@ use crate::{
     native::NativeCallback,
     prototype::{CaptureDescriptor, PrototypeBundle, RuntimePrototypeIndex},
     upvalue::UpvalueData,
-    value::RawValue,
+    value::{LightUserdata, RawValue},
 };
 
 use super::Runtime;
@@ -192,6 +192,17 @@ impl Runtime {
         value: RawValue,
     ) -> FaultResult<RawValue> {
         Ok(self.heap.upvalue_mut(upvalue)?.replace(value))
+    }
+
+    pub(crate) fn function_upvalue_id(
+        &self,
+        function: FunctionId,
+        index: usize,
+    ) -> FaultResult<Option<LightUserdata>> {
+        Ok(self
+            .heap
+            .function(function)?
+            .upvalue_identity(self.id, function, index))
     }
 }
 

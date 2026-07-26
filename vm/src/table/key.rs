@@ -2,7 +2,7 @@ use crate::{
     id::{FunctionId, ObjectId, TableId},
     number::float_to_integer,
     string::LuaString,
-    value::RawValue,
+    value::{LightUserdata, RawValue},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -13,6 +13,7 @@ pub(super) enum TableKey {
     String(LuaString),
     Table(TableId),
     Function(FunctionId),
+    LightUserdata(LightUserdata),
 }
 
 impl TableKey {
@@ -31,6 +32,7 @@ impl TableKey {
             Self::String(value) => RawValue::String(value.clone()),
             Self::Table(id) => RawValue::Table(*id),
             Self::Function(id) => RawValue::Function(*id),
+            Self::LightUserdata(value) => RawValue::LightUserdata(*value),
         }
     }
 
@@ -82,5 +84,6 @@ pub(super) fn normalize_key(value: &RawValue) -> KeyNormalization {
         RawValue::String(value) => KeyNormalization::Key(TableKey::String(value.clone())),
         RawValue::Table(id) => KeyNormalization::Key(TableKey::Table(*id)),
         RawValue::Function(id) => KeyNormalization::Key(TableKey::Function(*id)),
+        RawValue::LightUserdata(value) => KeyNormalization::Key(TableKey::LightUserdata(*value)),
     }
 }

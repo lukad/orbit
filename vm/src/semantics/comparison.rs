@@ -22,6 +22,7 @@ pub(super) fn equal(left: &RawValue, right: &RawValue) -> bool {
         (RawValue::String(left), RawValue::String(right)) => left == right,
         (RawValue::Table(left), RawValue::Table(right)) => left == right,
         (RawValue::Function(left), RawValue::Function(right)) => left == right,
+        (RawValue::LightUserdata(left), RawValue::LightUserdata(right)) => left == right,
         _ => false,
     }
 }

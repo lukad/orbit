@@ -1,10 +1,10 @@
 use std::rc::Rc;
 
 use crate::{
-    id::{FunctionId, ObjectId, UpvalueId},
+    id::{FunctionId, ObjectId, StateId, UpvalueId},
     native::NativeCallback,
     prototype::{PrototypeBundle, RuntimePrototypeIndex},
-    value::RawValue,
+    value::{LightUserdata, RawValue},
 };
 
 #[derive(Debug)]
@@ -67,6 +67,26 @@ impl FunctionData {
                         visit(object);
                     }
                 }
+            }
+        }
+    }
+
+    pub(crate) fn upvalue_identity(
+        &self,
+        state: StateId,
+        function: FunctionId,
+        index: usize,
+    ) -> Option<LightUserdata> {
+        match self {
+            Self::Lua(closure) => closure
+                .upvalues
+                .get(index)
+                .copied()
+                .map(|upvalue| LightUserdata::lua_upvalue(state, upvalue)),
+            Self::Native(function_data) => {
+                function_data.captures.get(index)?;
+                let index = u32::try_from(index).ok()?;
+                Some(LightUserdata::native_upvalue(state, function, index))
             }
         }
     }

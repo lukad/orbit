@@ -446,4 +446,19 @@ impl NativeServices for ExecutionNativeServices<'_> {
     fn raw_negate(&mut self, operand: &RawValue) -> VmResult<RawValue> {
         semantics::unary(UnaryOp::Negate, operand).map_err(VmError::from)
     }
+
+    fn function_upvalue_id(
+        &mut self,
+        function: &RawValue,
+        index: usize,
+    ) -> VmResult<Option<RawValue>> {
+        let RawValue::Function(function) = function else {
+            return Ok(None);
+        };
+
+        self.runtime
+            .function_upvalue_id(*function, index)
+            .map(|identity| identity.map(RawValue::LightUserdata))
+            .map_err(VmError::from)
+    }
 }

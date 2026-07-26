@@ -17,6 +17,7 @@ impl Runtime {
             Value::String(value) => Ok(RawValue::String(value)),
             Value::Table(table) => self.import_table(&table).map(RawValue::Table),
             Value::Function(function) => self.import_function(&function).map(RawValue::Function),
+            Value::LightUserdata(value) => Ok(RawValue::LightUserdata(value)),
         }
     }
 
@@ -40,6 +41,7 @@ impl Runtime {
             RawValue::String(value) => Ok(Value::String(value.clone())),
             RawValue::Table(id) => self.export_table(*id).map(Value::Table),
             RawValue::Function(id) => self.export_function(*id).map(Value::Function),
+            RawValue::LightUserdata(value) => Ok(Value::LightUserdata(*value)),
         }
     }
 

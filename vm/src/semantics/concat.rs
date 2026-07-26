@@ -39,6 +39,10 @@ fn concat_bytes(value: &RawValue) -> Option<Vec<u8>> {
         RawValue::String(value) => Some(value.as_bytes().to_vec()),
         RawValue::Integer(value) => Some(value.to_string().into_bytes()),
         RawValue::Float(value) => Some(format_lua_float(*value).into_bytes()),
-        RawValue::Nil | RawValue::Boolean(_) | RawValue::Table(_) | RawValue::Function(_) => None,
+        RawValue::Nil
+        | RawValue::Boolean(_)
+        | RawValue::Table(_)
+        | RawValue::Function(_)
+        | RawValue::LightUserdata(_) => None,
     }
 }

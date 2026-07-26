@@ -22,6 +22,7 @@ impl TypeMetatable {
             RawValue::String(_) => Some(Self::String),
             RawValue::Function(_) => Some(Self::Function),
             RawValue::Table(_) => None,
+            RawValue::LightUserdata(_) => None,
         }
     }
 }

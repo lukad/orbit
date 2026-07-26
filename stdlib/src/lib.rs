@@ -2,6 +2,7 @@
 
 mod argument;
 mod basic;
+mod debug;
 mod error;
 mod math;
 mod package;
@@ -15,7 +16,8 @@ pub fn install(state: &mut State) -> VmResult<()> {
     package::install(state)?;
     table::install(state)?;
     math::install(state)?;
-    string::install(state)
+    string::install(state)?;
+    debug::install(state)
 }
 
 pub(crate) fn set_field(
