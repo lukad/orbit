@@ -173,7 +173,7 @@ lua54_runtime_tests! {
     enabled runtime_vararg => "vararg.lua",
     ignored runtime_closure => "closure.lua",
     ignored runtime_coroutine => "coroutine.lua",
-    ignored runtime_goto => "goto.lua",
+    enabled runtime_goto => "goto.lua",
     ignored runtime_errors => "errors.lua",
     ignored runtime_math => "math.lua",
     ignored runtime_sort => "sort.lua",
