@@ -1,6 +1,6 @@
 use orbit_common::{SourceId, Span};
 use orbit_compiler::bytecode::{
-    BinaryOp, Chunk, ImmediateOperandSide, Instruction, SourceMapEntry,
+    BinaryOp, Chunk, ImmediateOperandSide, Instruction, Register, SourceMapEntry,
 };
 use orbit_parser::{lexer::lex, parser::parse_chunk};
 
@@ -657,6 +657,141 @@ fn false_to_be_closed_values_are_noops() {
 }
 
 #[test]
+fn non_closable_values_report_the_source_level_close_name() {
+    for (source, expected_name) in [
+        ("local resource <close> = true", "resource"),
+        ("for value in nil, nil, nil, true do end", "(for state)"),
+    ] {
+        let error = execute_source(source).unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            VmErrorKind::NonClosableValue {
+                name: expected_name.into(),
+            },
+            "source:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn malformed_mark_to_close_order_returns_a_vm_error() {
+    let mut state = State::new(NoLoadService).unwrap();
+    let resource = state.create_table(0, 0).unwrap();
+    let metatable = state.create_table(0, 1).unwrap();
+    let close = state
+        .create_native_function("close", return_immediately, &[])
+        .unwrap();
+
+    state
+        .raw_set(
+            &metatable,
+            &string_value("__close"),
+            &Value::Function(close),
+        )
+        .unwrap();
+    state
+        .set_metatable(&Value::Table(resource.clone()), Some(&metatable))
+        .unwrap();
+    state
+        .set_global(b"resource", &Value::Table(resource))
+        .unwrap();
+
+    let mut chunk = compile_source(
+        SourceId::new(0),
+        "local first <close> = resource\nlocal second <close> = resource",
+    );
+    let mut mark_count = 0;
+
+    for instruction in &mut chunk.entry.code {
+        if let Instruction::MarkToClose { register } = instruction {
+            if mark_count == 1 {
+                *register = Register(0);
+            }
+            mark_count += 1;
+        }
+    }
+
+    assert_eq!(mark_count, 2);
+
+    let error = execute_chunk(&mut state, chunk).unwrap_err();
+
+    assert_eq!(
+        error.kind,
+        VmErrorKind::InvalidToCloseOrder {
+            previous: 0,
+            register: 0,
+        }
+    );
+}
+
+#[test]
+fn yielding_close_keeps_pending_open_returns_alive_during_collection() {
+    let mut state = State::new(NoLoadService).unwrap();
+    let resource = state.create_table(0, 0).unwrap();
+    let metatable = state.create_table(0, 1).unwrap();
+    let close = state
+        .create_native_function("yielding close", yield_once, &[])
+        .unwrap();
+
+    state
+        .raw_set(
+            &metatable,
+            &string_value("__close"),
+            &Value::Function(close),
+        )
+        .unwrap();
+    state
+        .set_metatable(&Value::Table(resource.clone()), Some(&metatable))
+        .unwrap();
+    state
+        .set_global(b"resource", &Value::Table(resource))
+        .unwrap();
+
+    let function = state
+        .load_chunk(compile_source(
+            SourceId::new(0),
+            r#"
+                local value <close> = resource
+
+                local function make_result()
+                    return {}
+                end
+
+                return make_result()
+            "#,
+        ))
+        .unwrap();
+
+    let CallOutcome::Yielded {
+        values,
+        mut suspension,
+    } = state.call(&function, &[]).unwrap()
+    else {
+        panic!("__close should yield");
+    };
+
+    assert_eq!(values, vec![Value::Integer(1)]);
+    suspension.collect_garbage().unwrap();
+
+    let CallOutcome::Returned(values) = suspension.resume(&[Value::Integer(0)]).unwrap() else {
+        panic!("resumed close should return");
+    };
+
+    let [Value::Table(result)] = values.as_slice() else {
+        panic!("pending return value should remain a table");
+    };
+
+    state
+        .raw_set(result, &string_value("answer"), &Value::Integer(42))
+        .unwrap();
+    assert_eq!(
+        state.raw_get(result, &string_value("answer")).unwrap(),
+        Value::Integer(42)
+    );
+}
+
+#[test]
 fn fills_missing_parameters_with_nil() {
     assert_execute(
         r#"
@@ -962,21 +1097,6 @@ fn zero_numeric_for_step_returns_an_error() {
     .unwrap_err();
 
     assert!(matches!(error.kind, VmErrorKind::ZeroForStep));
-}
-
-#[test]
-fn truthy_to_be_closed_values_report_unsupported_metamethods() {
-    let error = execute_source(
-        r#"
-            local value <close> = true
-        "#,
-    )
-    .unwrap_err();
-
-    assert!(matches!(
-        error.kind,
-        VmErrorKind::UnsupportedToBeClosedLocal
-    ));
 }
 
 #[test]

@@ -16,6 +16,18 @@ pub(crate) struct OpenExtent {
     pub(super) top: usize,
 }
 
+struct CloseOperation {
+    base: Register,
+    cause: RawValue,
+    completion: CloseCompletion,
+}
+
+pub(super) enum CloseCompletion {
+    Resume,
+    ReturnOwned(Box<[RawValue]>),
+    Unwind(VmError),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResultTarget {
     Call { base: usize, results: Count },
@@ -24,6 +36,7 @@ pub(crate) enum ResultTarget {
     Operator { destination: Register },
     Comparison { destination: Register },
     NewIndex,
+    Close,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,6 +96,9 @@ pub(crate) enum FrameBoundary {
     /// Cleanup returns snapshot their values before closing captured locals.
     ReturnOwned {
         values: Box<[RawValue]>,
+    },
+    UnwindOwned {
+        error: VmError,
     },
 }
 
@@ -148,6 +164,7 @@ impl Activation {
 pub(crate) struct LuaActivation {
     frame: CallFrame,
     return_to: Option<ReturnTarget>,
+    close: Option<CloseOperation>,
 }
 
 impl LuaActivation {
@@ -155,6 +172,7 @@ impl LuaActivation {
         Self {
             frame,
             return_to: None,
+            close: None,
         }
     }
 
@@ -162,6 +180,7 @@ impl LuaActivation {
         Self {
             frame,
             return_to: Some(return_to),
+            close: None,
         }
     }
 
@@ -178,11 +197,74 @@ impl LuaActivation {
     }
 
     pub(crate) fn into_frame(self) -> CallFrame {
+        assert!(
+            self.close.is_none(),
+            "recycling an activation during cleanup"
+        );
         self.frame
     }
 
-    pub(crate) fn visit_roots(&self, visit: impl FnMut(ObjectId)) {
-        self.frame.visit_roots(visit);
+    pub(crate) fn visit_roots(&self, mut visit: impl FnMut(ObjectId)) {
+        self.frame.visit_roots(&mut visit);
+
+        let Some(operation) = &self.close else {
+            return;
+        };
+
+        if let Some(object) = operation.cause.object_id() {
+            visit(object);
+        }
+
+        if let CloseCompletion::ReturnOwned(values) = &operation.completion {
+            for value in values {
+                if let Some(object) = value.object_id() {
+                    visit(object);
+                }
+            }
+        }
+    }
+
+    pub(super) fn begin_close(
+        &mut self,
+        base: Register,
+        cause: RawValue,
+        completion: CloseCompletion,
+    ) {
+        assert!(self.close.is_none(), "activation is already closing");
+
+        self.close = Some(CloseOperation {
+            base,
+            cause,
+            completion,
+        });
+    }
+
+    pub(super) fn is_closing(&self) -> bool {
+        self.close.is_some()
+    }
+
+    pub(super) fn next_to_close(&mut self) -> Option<(Register, RawValue)> {
+        let operation = self.close.as_ref()?;
+        let register = self.frame.pop_to_close_from(operation.base)?;
+
+        Some((register, operation.cause.clone()))
+    }
+
+    pub(super) fn finish_close(&mut self) -> CloseCompletion {
+        self.close
+            .take()
+            .expect("activation has no active close operation")
+            .completion
+    }
+
+    pub(super) fn replace_close_error(&mut self, cause: RawValue, error: VmError) {
+        let operation = self
+            .close
+            .as_mut()
+            .expect("activation has no active close operation");
+
+        operation.cause = cause;
+        operation.completion = CloseCompletion::Unwind(error);
     }
 }
 

@@ -2,7 +2,7 @@ use orbit_compiler::bytecode::{Count, Register};
 
 use crate::{
     error::{FaultResult, VmErrorKind},
-    execution::Activation,
+    execution::{Activation, activation::CloseCompletion},
     id::FunctionId,
     value::RawValue,
 };
@@ -185,27 +185,30 @@ impl Execution<'_> {
         values: Count,
         close_from: Option<Register>,
     ) -> FaultResult<FrameBoundary> {
-        if let Some(close_from) = close_from {
+        let Some(close_from) = close_from else {
+            return Ok(FrameBoundary::Return { base, values });
+        };
+
+        let values = {
             let runtime = &*self.runtime;
-            let values = self
-                .stack
-                .last_mut()
-                .and_then(Activation::as_lua_mut)
-                .expect("active activation is Lua")
-                .frame_mut()
-                .collect_return(runtime, base, values)?;
 
             self.stack
                 .last_mut()
                 .and_then(Activation::as_lua_mut)
                 .expect("active activation is Lua")
                 .frame_mut()
-                .close_upvalues_from(runtime, close_from)?;
+                .collect_return(runtime, base, values)?
+        };
 
-            return Ok(FrameBoundary::ReturnOwned { values });
-        }
+        self.prepare_close(
+            close_from,
+            RawValue::Nil,
+            CloseCompletion::ReturnOwned(values),
+        )?;
 
-        Ok(FrameBoundary::Return { base, values })
+        Ok(self
+            .continue_close()?
+            .expect("return cleanup must produce a boundary"))
     }
 
     pub(super) fn generic_for_call(

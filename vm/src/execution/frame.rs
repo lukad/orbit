@@ -27,6 +27,7 @@ pub(crate) struct CallFrame {
     upvalues: Rc<[UpvalueId]>,
     varargs: Vec<RawValue>,
     registers: Vec<RegisterSlot>,
+    close: Vec<Register>,
     declared_registers: usize,
     open_results: Option<OpenExtent>,
     pc: usize,
@@ -38,6 +39,7 @@ pub(crate) struct CallFrame {
 pub(crate) struct CallFrameStorage {
     varargs: Vec<RawValue>,
     registers: Vec<RegisterSlot>,
+    close: Vec<Register>,
 }
 
 impl CallFrame {
@@ -113,6 +115,7 @@ impl CallFrame {
         let CallFrameStorage {
             mut varargs,
             mut registers,
+            mut close,
         } = storage;
 
         registers.clear();
@@ -152,6 +155,8 @@ impl CallFrame {
             }
         }
 
+        close.clear();
+
         Ok(Self {
             function,
             bundle,
@@ -160,6 +165,7 @@ impl CallFrame {
             upvalues,
             varargs,
             registers,
+            close,
             declared_registers,
             open_results: None,
             pc: 0,
@@ -170,10 +176,12 @@ impl CallFrame {
     pub(crate) fn into_storage(mut self) -> CallFrameStorage {
         self.varargs.clear();
         self.registers.clear();
+        self.close.clear();
 
         CallFrameStorage {
             varargs: self.varargs,
             registers: self.registers,
+            close: self.close,
         }
     }
 
@@ -866,7 +874,7 @@ impl CallFrame {
                 let result = values.first().is_some_and(RawValue::is_truthy);
                 self.set_register(runtime, destination, RawValue::Boolean(result))
             }
-            ResultTarget::NewIndex => Ok(()),
+            ResultTarget::NewIndex | ResultTarget::Close => Ok(()),
         }
     }
 
@@ -928,7 +936,7 @@ impl CallFrame {
                         .is_truthy();
                 self.set_register(runtime, destination, RawValue::Boolean(result))
             }
-            ResultTarget::NewIndex => Ok(()),
+            ResultTarget::NewIndex | ResultTarget::Close => Ok(()),
         }
     }
 
@@ -1080,6 +1088,39 @@ impl CallFrame {
 
     fn runtime_prototype(&self) -> &RuntimePrototype {
         &self.runtime_prototype
+    }
+
+    pub(crate) fn close_name(&self) -> Option<&str> {
+        self.runtime_prototype.close_name(self.current_pc?)
+    }
+
+    pub(crate) fn mark_to_close(&mut self, register: Register) -> FaultResult<()> {
+        let requested = self.close.len().saturating_add(1);
+
+        self.close
+            .try_reserve(1)
+            .map_err(|_| VmErrorKind::FrameCapacityExceeded { requested })?;
+
+        if let Some(previous) = self.close.last()
+            && previous.0 >= register.0
+        {
+            return Err(VmErrorKind::InvalidToCloseOrder {
+                previous: previous.0,
+                register: register.0,
+            });
+        }
+
+        self.close.push(register);
+
+        Ok(())
+    }
+
+    pub(crate) fn pop_to_close_from(&mut self, base: Register) -> Option<Register> {
+        if self.close.last().is_some_and(|register| *register >= base) {
+            self.close.pop()
+        } else {
+            None
+        }
     }
 }
 

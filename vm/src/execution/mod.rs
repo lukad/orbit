@@ -17,6 +17,7 @@ mod native_tests;
 
 use crate::{
     error::{FaultResult, VmError, VmErrorKind, VmResult, VmTraceFrame},
+    execution::activation::CloseCompletion,
     function::FunctionSnapshot,
     id::ObjectId,
     runtime::Runtime,
@@ -29,6 +30,7 @@ pub(crate) use activation::{
 };
 
 pub(crate) use frame::{CallFrame, CallFrameStorage, offset_register};
+use orbit_compiler::bytecode::Register;
 
 use self::native::NativeStep;
 
@@ -270,6 +272,12 @@ impl<'runtime> Execution<'runtime> {
                         },
                     }
                 }
+                FrameBoundary::UnwindOwned { error } => {
+                    let activation = self.stack.pop().expect("unwinding activation is active");
+                    let target = activation.return_to();
+                    self.recycle_lua_activation(activation);
+                    self.forward_error(target, error)?;
+                }
             }
         }
     }
@@ -283,6 +291,10 @@ impl<'runtime> Execution<'runtime> {
     fn run_until_boundary(&mut self) -> FaultResult<FrameBoundary> {
         loop {
             self.collect_if_due()?;
+
+            if let Some(boundary) = self.continue_close()? {
+                return Ok(boundary);
+            }
 
             let instruction = self.active_lua_frame_mut().next_instruction()?;
 
@@ -595,68 +607,112 @@ impl<'runtime> Execution<'runtime> {
         self.spare_lua_frame = Some(activation.into_frame().into_storage());
     }
 
-    fn route_error(&mut self, mut error: VmError) -> Result<(), VmError> {
-        let boundary = self.stack.iter().rposition(|activation| {
-            matches!(activation.return_to(), Some(ReturnTarget::Native { .. }))
-        });
-
-        let Some(boundary) = boundary else {
-            let (frames, omitted) = Self::trace_frames(&self.stack);
-            error.append_trace(frames, omitted);
-
-            return Err(error);
-        };
-
-        let token = match self.stack[boundary]
-            .return_to()
-            .expect("boundary has a return target")
-        {
-            ReturnTarget::Native { token, .. } => token,
-            ReturnTarget::Lua(_) => {
-                unreachable!("boundary search selected a native target")
-            }
-        };
-
-        let (frames, omitted) = Self::trace_frames(&self.stack[boundary..]);
-        error.append_trace(frames, omitted);
-
-        self.stack.truncate(boundary);
-
-        let result = self
-            .stack
-            .last_mut()
-            .and_then(Activation::as_native_mut)
-            .ok_or(VmErrorKind::InvalidNativeContinuation {
-                message: "native error boundary has no native caller",
-            })
-            .and_then(|activation| activation.resume_error_from_action(token, error));
-
-        if let Err(kind) = result {
-            let mut invariant = VmError::from(kind);
-
-            let (frames, omitted) = Self::trace_frames(&self.stack);
-            invariant.append_trace(frames, omitted);
-
-            return Err(invariant);
-        }
-
-        Ok(())
+    fn error_argument(&self, error: &VmError) -> FaultResult<RawValue> {
+        self.runtime.import_value(error.object_or_message())
     }
 
-    fn active_lua_frame(&self) -> &CallFrame {
+    fn route_error(&mut self, mut error: VmError) -> Result<(), VmError> {
+        loop {
+            let Some(activation) = self.stack.last() else {
+                return Err(error);
+            };
+
+            if activation.as_lua().is_some() {
+                let frame = activation.trace_frame();
+                error.append_trace(vec![frame].into_boxed_slice(), 0);
+
+                let cause = self.error_argument(&error).map_err(VmError::from)?;
+
+                if self.active_lua_activation().is_closing() {
+                    self.active_lua_activation_mut()
+                        .replace_close_error(cause, error);
+
+                    return Ok(());
+                }
+
+                self.prepare_close(Register(0), cause, CloseCompletion::Unwind(error))
+                    .map_err(VmError::from)?;
+
+                return Ok(());
+            }
+
+            let activation = self
+                .stack
+                .pop()
+                .expect("error routing inspected an active activation");
+
+            error.append_trace(vec![activation.trace_frame()].into_boxed_slice(), 0);
+
+            let target = activation.return_to();
+
+            match target {
+                Some(ReturnTarget::Native { token, .. }) => {
+                    let result = self
+                        .stack
+                        .last_mut()
+                        .and_then(Activation::as_native_mut)
+                        .ok_or(VmErrorKind::InvalidNativeContinuation {
+                            message: "native error boundary has no native caller",
+                        })
+                        .and_then(|parent| parent.resume_error_from_action(token, error));
+
+                    return result.map_err(VmError::from);
+                }
+                Some(ReturnTarget::Lua(_)) => (),
+                None => {
+                    if self.stack.is_empty() {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+    }
+
+    fn forward_error(
+        &mut self,
+        target: Option<ReturnTarget>,
+        error: VmError,
+    ) -> Result<(), VmError> {
+        match target {
+            Some(ReturnTarget::Native { token, .. }) => {
+                let result = self
+                    .stack
+                    .last_mut()
+                    .and_then(Activation::as_native_mut)
+                    .ok_or(VmErrorKind::InvalidNativeContinuation {
+                        message: "native error boundary has no native caller",
+                    })
+                    .and_then(|parent| parent.resume_error_from_action(token, error));
+
+                match result {
+                    Ok(()) => Ok(()),
+                    Err(kind) => self.route_error(VmError::from(kind)),
+                }
+            }
+            Some(ReturnTarget::Lua(_)) | None => self.route_error(error),
+        }
+    }
+
+    fn active_lua_activation(&self) -> &LuaActivation {
         self.stack
             .last()
             .and_then(Activation::as_lua)
             .expect("active activation is Lua")
-            .frame()
     }
 
-    fn active_lua_frame_mut(&mut self) -> &mut CallFrame {
+    fn active_lua_activation_mut(&mut self) -> &mut LuaActivation {
         self.stack
             .last_mut()
             .and_then(Activation::as_lua_mut)
             .expect("active activation is Lua")
-            .frame_mut()
+    }
+
+    fn active_lua_frame(&self) -> &CallFrame {
+        self.active_lua_activation().frame()
+    }
+
+    fn active_lua_frame_mut(&mut self) -> &mut CallFrame {
+        self.active_lua_activation_mut().frame_mut()
     }
 
     fn read_register(&self, register: orbit_compiler::bytecode::Register) -> FaultResult<RawValue> {

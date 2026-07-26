@@ -9,9 +9,9 @@ use orbit_resolver::hir::{
 
 use crate::{
     bytecode::{
-        BinaryOp as BytecodeBinaryOp, Count, ImmediateOperandSide, Instruction, Prototype,
-        PrototypeIndex, Register, StringIndex, UnaryOp as BytecodeUnaryOp, UpvalueDescriptor,
-        UpvalueIndex,
+        BinaryOp as BytecodeBinaryOp, CloseDebugInfo, Count, ImmediateOperandSide, Instruction,
+        Prototype, PrototypeIndex, Register, StringIndex, UnaryOp as BytecodeUnaryOp,
+        UpvalueDescriptor, UpvalueIndex,
     },
     constants::{ConstantKey, ConstantPoolBuilder},
     emitter::{CodeLabel, Emitter},
@@ -390,6 +390,7 @@ struct FunctionCompiler<'hir> {
     registers: RegisterStack,
     locals: Vec<LocalSlot>,
     active_locals: Vec<LocalId>,
+    close_debug: Vec<CloseDebugInfo>,
     scopes: Vec<ActiveScope>,
     hir_labels: Vec<CodeLabel>,
     reachable_statements: Vec<bool>,
@@ -465,6 +466,7 @@ impl<'hir> FunctionCompiler<'hir> {
             registers: RegisterStack::new(),
             locals,
             active_locals: vec![],
+            close_debug: vec![],
             scopes: vec![],
             hir_labels,
             reachable_statements,
@@ -1238,12 +1240,17 @@ impl<'hir> FunctionCompiler<'hir> {
         self.registers.promote_temporaries_to_pinned(controls);
 
         let closer = control_base.offset(3);
-        self.emitter.emit(
+        let close_pc = self.emitter.emit(
             span,
             Instruction::MarkToClose {
                 register: closer.to_bytecode(span)?,
             },
         )?;
+
+        self.close_debug.push(CloseDebugInfo {
+            pc: close_pc,
+            name: "(for state)".into(),
+        });
 
         let body_label = self.emitter.new_label();
         let call_label = self.emitter.new_label();
@@ -1324,6 +1331,7 @@ impl<'hir> FunctionCompiler<'hir> {
 
             slot.register = Some(register);
             slot.state = LocalState::Active;
+
             self.active_locals.push(local);
         }
 
@@ -1679,12 +1687,17 @@ impl<'hir> FunctionCompiler<'hir> {
                     .register
                     .expect("active to-be-closed local has no register");
 
-                self.emitter.emit(
+                let pc = self.emitter.emit(
                     hir_local.span,
                     Instruction::MarkToClose {
                         register: register.to_bytecode(hir_local.span)?,
                     },
                 )?;
+
+                self.close_debug.push(CloseDebugInfo {
+                    pc,
+                    name: hir_local.name.as_str().into(),
+                });
             }
         }
 
@@ -2742,8 +2755,6 @@ fn compile_function(
         None
     };
 
-    compiler.leave_scope(function.span, false)?;
-
     if falls_through {
         compiler.emitter.emit(
             function.span,
@@ -2754,6 +2765,8 @@ fn compile_function(
             },
         )?;
     }
+
+    compiler.leave_scope(function.span, false)?;
 
     let max_registers = compiler.registers.max_registers().max(1);
     let constants = compiler.constants.finish();
@@ -2773,6 +2786,7 @@ fn compile_function(
         children: compiler.children.into_boxed_slice(),
         code: emitted.instructions,
         source_map: emitted.source_map,
+        close_debug: compiler.close_debug.into_boxed_slice(),
     })
 }
 
@@ -3009,6 +3023,41 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn close_debug_entries_name_mark_to_close_instructions_in_pc_order() {
+        let chunk = compile_source(
+            "local outer <close> = nil\n\
+             for value in nil do\n\
+                 local inner <close> = nil\n\
+             end",
+        );
+
+        assert_eq!(
+            chunk
+                .entry
+                .close_debug
+                .iter()
+                .map(|entry| entry.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["outer", "(for state)", "inner"]
+        );
+
+        assert!(
+            chunk
+                .entry
+                .close_debug
+                .windows(2)
+                .all(|entries| entries[0].pc < entries[1].pc)
+        );
+
+        for entry in &chunk.entry.close_debug {
+            assert!(matches!(
+                chunk.entry.code.get(entry.pc as usize),
+                Some(Instruction::MarkToClose { .. })
+            ));
+        }
     }
 
     fn standalone_closes(chunk: &Chunk) -> Vec<Register> {

@@ -40,6 +40,12 @@ pub struct Chunk {
 }
 
 #[derive(Debug)]
+pub struct CloseDebugInfo {
+    pub pc: u32,
+    pub name: Box<str>,
+}
+
+#[derive(Debug)]
 pub struct Prototype {
     pub name: Option<Box<str>>,
     pub span: Span,
@@ -53,6 +59,7 @@ pub struct Prototype {
     pub code: Box<[Instruction]>,
 
     pub source_map: Box<[SourceMapEntry]>,
+    pub close_debug: Box<[CloseDebugInfo]>,
 }
 
 #[derive(Debug)]
@@ -81,7 +88,7 @@ pub struct SourceMapEntry {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Register(pub u8);
 

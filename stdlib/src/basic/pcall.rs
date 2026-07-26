@@ -19,17 +19,12 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
             Ok(context.return_values(results))
         }
         NativeEvent::ResumeError { token: CALL } => {
-            let (object, fallback) = {
+            let object = {
                 let failure = context
                     .resume_error()
                     .expect("ResumeError must contain an error");
 
-                (failure.object().cloned(), failure.kind.to_string())
-            };
-
-            let object = match object {
-                Some(object) => context.import(object)?,
-                None => context.string(fallback),
+                context.import(failure.object_or_message())?
             };
 
             Ok(context.return_values([context.boolean(false), object]))

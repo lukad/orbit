@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use orbit_common::Span;
 
-use crate::{Value, loading::LoadError};
+use crate::{LuaString, Value, loading::LoadError};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VmErrorKind {
@@ -106,8 +106,8 @@ pub enum VmErrorKind {
     InvalidEntryUpvalue { upvalue: usize },
     #[error("child prototype {child} upvalue {upvalue} directly captures the external environment")]
     InvalidChildExternalEnvironment { child: u32, upvalue: usize },
-    #[error("to-be-closed locals require __close metamethod support")]
-    UnsupportedToBeClosedLocal,
+    #[error("variable '{name}' got a non-closeable value")]
+    NonClosableValue { name: Box<str> },
     #[error("attempt to call a {kind} value")]
     InvalidCallOperand { kind: &'static str },
     #[error("invalid register range: start {start}, count {count}")]
@@ -158,11 +158,21 @@ pub enum VmErrorKind {
     LoadFailure(LoadError),
     #[error("Lua error")]
     Raised,
+    #[error("to-be-closed register R{register} was marked after R{previous}")]
+    InvalidToCloseOrder { previous: u8, register: u8 },
 }
 
 impl From<LoadError> for VmErrorKind {
     fn from(error: LoadError) -> Self {
         Self::LoadFailure(error)
+    }
+}
+
+impl VmError {
+    pub fn object_or_message(&self) -> Value {
+        self.object
+            .clone()
+            .unwrap_or_else(|| Value::String(LuaString::from(self.kind.to_string().into_bytes())))
     }
 }
 

@@ -94,7 +94,9 @@ impl Execution<'_> {
                 self.mark_to_close(register)?;
             }
             Instruction::CloseFrom { base } => {
-                self.close_from(base)?;
+                if let Some(boundary) = self.close_from(base)? {
+                    return Ok(Some(boundary));
+                }
             }
             Instruction::Jump { offset } => {
                 self.jump(offset)?;

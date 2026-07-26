@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use orbit_common::Span;
 use orbit_compiler::bytecode::{
-    Chunk, Constant, ConstantIndex, Instruction, Prototype, PrototypeIndex, Register,
-    UpvalueDescriptor, UpvalueIndex,
+    Chunk, CloseDebugInfo, Constant, ConstantIndex, Instruction, Prototype, PrototypeIndex,
+    Register, UpvalueDescriptor, UpvalueIndex,
 };
 
 use crate::{
@@ -158,6 +158,7 @@ fn load_prototype(
         upvalues,
         children: children.into_boxed_slice(),
         code: prototype.code,
+        close_debug: prototype.close_debug,
         source_map,
     };
 
@@ -177,6 +178,7 @@ pub(crate) struct RuntimePrototype {
     upvalues: Box<[CaptureDescriptor]>,
     children: Box<[RuntimePrototypeIndex]>,
     code: Box<[Instruction]>,
+    close_debug: Box<[CloseDebugInfo]>,
     source_map: Box<[(u32, Span)]>,
 }
 
@@ -207,6 +209,17 @@ impl RuntimePrototype {
 
     pub(crate) fn constant(&self, index: ConstantIndex) -> Option<&RuntimeConstant> {
         self.constants.get(index.get() as usize)
+    }
+
+    pub(crate) fn close_name(&self, pc: usize) -> Option<&str> {
+        let pc = u32::try_from(pc).ok()?;
+
+        let index = self
+            .close_debug
+            .binary_search_by_key(&pc, |entry| entry.pc)
+            .ok()?;
+
+        Some(self.close_debug[index].name.as_ref())
     }
 
     pub(crate) fn capture_descriptors(&self) -> &[CaptureDescriptor] {

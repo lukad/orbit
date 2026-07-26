@@ -23,6 +23,7 @@ fn empty_chunk() -> Chunk {
             upvalues: Box::new([]),
             children: Box::new([]),
             code: Box::new([]),
+            close_debug: Box::new([]),
             source_map: Box::new([]),
         },
     }
