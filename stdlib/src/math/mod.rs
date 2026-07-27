@@ -1,8 +1,11 @@
+mod cos;
 mod extrema;
 mod floor;
 mod fmod;
 mod max;
 mod min;
+mod sin;
+mod tan;
 mod tointeger;
 
 use orbit_vm::{State, Value, VmResult};
@@ -26,6 +29,15 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
 
     let floor = state.create_native_function("math.floor", floor::callback, &[])?;
     set_field(state, &math, floor::FUNCTION, &Value::Function(floor))?;
+
+    let sin = state.create_native_function("math.sin", sin::callback, &[])?;
+    set_field(state, &math, sin::FUNCTION, &Value::Function(sin))?;
+
+    let cos = state.create_native_function("math.cos", cos::callback, &[])?;
+    set_field(state, &math, cos::FUNCTION, &Value::Function(cos))?;
+
+    let tan = state.create_native_function("math.tan", tan::callback, &[])?;
+    set_field(state, &math, tan::FUNCTION, &Value::Function(tan))?;
 
     set_field(state, &math, b"mininteger", &Value::Integer(i64::MIN))?;
     set_field(state, &math, b"maxinteger", &Value::Integer(i64::MAX))?;

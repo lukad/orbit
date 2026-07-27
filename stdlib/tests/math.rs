@@ -40,6 +40,25 @@ fn install_registers_math_extrema() {
 }
 
 #[test]
+fn install_registers_trigonometric_functions() {
+    let mut state = installed_state();
+
+    let Value::Table(math) = state.get_global(b"math").unwrap() else {
+        panic!("math was not installed as a table");
+    };
+
+    for name in ["sin", "cos", "tan"] {
+        assert!(
+            matches!(
+                state.raw_get(&math, &string(name)).unwrap(),
+                Value::Function(_)
+            ),
+            "math.{name} was not registered"
+        );
+    }
+}
+
+#[test]
 fn extrema_return_primitive_values_and_preserve_their_types() {
     let mut state = installed_state();
 
@@ -667,4 +686,113 @@ fn floor_reports_missing_and_non_numeric_arguments() {
             message: "bad argument #1 to 'floor' (number expected, got string)".into(),
         }
     );
+}
+
+#[test]
+fn trigonometric_functions_use_radians_and_return_floats() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            return
+                math.sin(0), math.sin(1), math.sin(-1),
+                math.cos(0), math.cos(1), math.cos(-1),
+                math.tan(0), math.tan(1), math.tan(-1)
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Float(0.0_f64.sin()),
+            Value::Float(1.0_f64.sin()),
+            Value::Float((-1.0_f64).sin()),
+            Value::Float(0.0_f64.cos()),
+            Value::Float(1.0_f64.cos()),
+            Value::Float((-1.0_f64).cos()),
+            Value::Float(0.0_f64.tan()),
+            Value::Float(1.0_f64.tan()),
+            Value::Float((-1.0_f64).tan()),
+        ]
+    );
+}
+
+#[test]
+fn trigonometric_functions_coerce_numeric_strings() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"return math.sin("1"), math.cos("-1"), math.tan("0.5")"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Float(1.0_f64.sin()),
+            Value::Float((-1.0_f64).cos()),
+            Value::Float(0.5_f64.tan()),
+        ]
+    );
+}
+
+#[test]
+fn trigonometric_functions_return_nan_for_infinite_arguments() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local sin = math.sin(1 / 0)
+            local cos = math.cos(1 / 0)
+            local tan = math.tan(1 / 0)
+            return sin ~= sin, cos ~= cos, tan ~= tan
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+        ]
+    );
+}
+
+#[test]
+fn trigonometric_functions_report_missing_and_non_numeric_arguments() {
+    let mut state = installed_state();
+
+    for function in ["sin", "cos", "tan"] {
+        for (argument, actual_type) in [("", "no value"), ("{}", "table"), (r#""nope""#, "string")]
+        {
+            let source = format!("return math.{function}({argument})");
+            let error = execute(&mut state, &source).unwrap_err();
+
+            assert_eq!(
+                error.kind,
+                VmErrorKind::NativeFunctionFailure {
+                    message: format!(
+                        "bad argument #1 to '{function}' (number expected, got {actual_type})"
+                    )
+                    .into(),
+                }
+            );
+
+            let native_name = format!("math.{function}");
+            assert!(
+                matches!(
+                    error.frames.first(),
+                    Some(VmTraceFrame::Native { name }) if name.as_ref() == native_name
+                ),
+                "expected the first traceback frame to be {native_name:?}, got {:?}",
+                error.frames.first()
+            );
+        }
+    }
 }
