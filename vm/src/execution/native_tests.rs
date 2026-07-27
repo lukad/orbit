@@ -4,9 +4,11 @@ use orbit_parser::{lexer::lex, parser::parse_chunk};
 
 use crate::{
     error::{VmError, VmErrorKind, VmResult, VmTraceFrame},
-    loading::NoLoadService,
+    id::TableId,
+    loading::{LoadError, LoadService, LoadSource, NoLoadService},
     native::{NativeAction, NativeContext, NativeEvent, NativeToken},
     runtime::Runtime,
+    string::LuaString,
     value::RawValue,
 };
 
@@ -23,12 +25,33 @@ const GET_ACTION: NativeToken = NativeToken::new(4);
 const SET_ACTION: NativeToken = NativeToken::new(5);
 
 fn compile_source(source: &str) -> Chunk {
-    let source_id = SourceId::new(0);
+    compile_source_with_id(SourceId::new(0), source)
+}
+
+fn compile_source_with_id(source_id: SourceId, source: &str) -> Chunk {
     let tokens = lex(source_id, source).unwrap();
     let ast = parse_chunk(source_id, tokens).unwrap();
     let hir = orbit_resolver::resolve(&ast).unwrap();
 
     orbit_compiler::compile(hir).unwrap()
+}
+
+struct BufferLoadService;
+
+impl LoadService for BufferLoadService {
+    fn compile(&mut self, source_id: SourceId, source: LoadSource<'_>) -> Result<Chunk, LoadError> {
+        let LoadSource::Buffer { source, .. } = source else {
+            return Err(LoadError::DynamicLoadingDisabled { source_id });
+        };
+
+        let source = std::str::from_utf8(source).expect("test source is valid UTF-8");
+
+        Ok(compile_source_with_id(source_id, source))
+    }
+
+    fn file_exists(&self, _filename: &[u8]) -> bool {
+        false
+    }
 }
 
 fn execution<'runtime>(runtime: &'runtime mut Runtime, source: &str) -> Execution<'runtime> {
@@ -275,6 +298,147 @@ fn get_with_heap_continuation(context: &mut NativeContext<'_>) -> VmResult<Nativ
             .clone()),
         event => Err(native_failure(format!("unexpected event: {event:?}"))),
     }
+}
+
+fn collect_and_read_inputs(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    let argument = context
+        .argument(0)
+        .ok_or_else(|| native_failure("missing table argument"))?;
+    let capture = context
+        .capture(0)
+        .ok_or_else(|| native_failure("missing table capture"))?;
+
+    context.collect_garbage()?;
+
+    let key = context.string("answer");
+    let argument_answer = context
+        .raw_get(&argument, &key)?
+        .as_integer()
+        .ok_or_else(|| native_failure("argument answer must be an integer"))?;
+    let capture_answer = context
+        .raw_get(&capture, &key)?
+        .as_integer()
+        .ok_or_else(|| native_failure("capture answer must be an integer"))?;
+
+    Ok(context.return_values([context.integer(argument_answer + capture_answer)]))
+}
+
+fn create_collect_and_read(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    let table = context.create_table(0, 1)?;
+    let key = context.string("answer");
+    let answer = context.integer(42);
+
+    context.raw_set(&table, key.clone(), answer)?;
+    context.collect_garbage()?;
+
+    let answer = context.raw_get(&table, &key)?;
+
+    Ok(context.return_values([answer]))
+}
+
+fn detach_raw_get_result_and_collect(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    let owner = context
+        .argument(0)
+        .ok_or_else(|| native_failure("missing owner table"))?;
+    let child_key = context.string("child");
+    let child = context.raw_get(&owner, &child_key)?;
+
+    context.raw_set(&owner, child_key, context.nil())?;
+    context.collect_garbage()?;
+
+    let answer_key = context.string("answer");
+    let answer = context.raw_get(&child, &answer_key)?;
+
+    Ok(context.return_values([answer]))
+}
+
+fn detach_metatable_and_collect(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    let target = context
+        .argument(0)
+        .ok_or_else(|| native_failure("missing metatable target"))?;
+    let metatable = context
+        .get_metatable(&target)?
+        .ok_or_else(|| native_failure("target has no metatable"))?;
+
+    context.set_metatable(&target, None)?;
+    context.collect_garbage()?;
+
+    let answer_key = context.string("answer");
+    let answer = context.raw_get(&metatable, &answer_key)?;
+
+    Ok(context.return_values([answer]))
+}
+
+fn detach_next_results_and_collect(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    let table = context
+        .argument(0)
+        .ok_or_else(|| native_failure("missing table"))?;
+    let nil = context.nil();
+    let (key, value) = context
+        .next(&table, &nil)?
+        .ok_or_else(|| native_failure("table has no first entry"))?;
+
+    context.raw_set(&table, key.clone(), context.nil())?;
+    context.collect_garbage()?;
+
+    let answer_key = context.string("answer");
+    let key_answer = context
+        .raw_get(&key, &answer_key)?
+        .as_integer()
+        .ok_or_else(|| native_failure("key answer must be an integer"))?;
+    let value_answer = context
+        .raw_get(&value, &answer_key)?
+        .as_integer()
+        .ok_or_else(|| native_failure("value answer must be an integer"))?;
+
+    Ok(context.return_values([context.integer(key_answer + value_answer)]))
+}
+
+fn load_collect_and_invoke(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    match context.event() {
+        NativeEvent::Start => {
+            let function = context.load_source(
+                LoadSource::Buffer {
+                    name: b"native root test",
+                    source: b"return 42",
+                },
+                None,
+            )?;
+
+            context.collect_garbage()?;
+
+            Ok(context.call(function, [], FIRST_CALL))
+        }
+
+        NativeEvent::Resume { token: FIRST_CALL } => {
+            let result = context
+                .resume_value(0)
+                .ok_or_else(|| native_failure("loaded function returned no value"))?;
+
+            Ok(context.return_values([result]))
+        }
+
+        NativeEvent::ResumeError { token: FIRST_CALL } => Err(context
+            .resume_error()
+            .expect("error event carries an error")
+            .clone()),
+
+        event => Err(native_failure(format!("unexpected event: {event:?}"))),
+    }
+}
+
+fn answer_table(runtime: &mut Runtime, answer: i64) -> TableId {
+    let table = runtime.allocate_table(0, 1).unwrap();
+
+    runtime
+        .raw_set(
+            table,
+            RawValue::String(LuaString::from("answer")),
+            RawValue::Integer(answer),
+        )
+        .unwrap();
+
+    table
 }
 
 fn native_failure(message: impl Into<Box<str>>) -> VmError {
@@ -884,5 +1048,251 @@ fn native_get_continuation_values_are_roots_while_a_metamethod_yields() {
     assert_eq!(
         runtime.raw_get(marker, &marker_key).unwrap(),
         RawValue::Integer(42)
+    );
+}
+
+#[test]
+fn native_arguments_and_captures_are_roots_during_callback_collection() {
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+    let argument = answer_table(&mut runtime, 20);
+    let capture = answer_table(&mut runtime, 22);
+    let function = runtime
+        .allocate_native_function(
+            "collect_and_read_inputs",
+            collect_and_read_inputs,
+            vec![RawValue::Table(capture)].into_boxed_slice(),
+        )
+        .unwrap();
+    let invocation = runtime.function_snapshot(function).unwrap();
+
+    let outcome = Execution::new(
+        &mut runtime,
+        invocation,
+        vec![RawValue::Table(argument)].into_boxed_slice(),
+    )
+    .unwrap()
+    .run()
+    .unwrap();
+
+    let ExecutionOutcome::Returned { values, .. } = outcome else {
+        panic!("native callback unexpectedly yielded");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+}
+
+#[test]
+fn native_created_tables_are_roots_during_callback_collection() {
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+    let function = runtime
+        .allocate_native_function(
+            "create_collect_and_read",
+            create_collect_and_read,
+            Box::new([]),
+        )
+        .unwrap();
+    let invocation = runtime.function_snapshot(function).unwrap();
+
+    let outcome = Execution::new(&mut runtime, invocation, Box::new([]))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    let ExecutionOutcome::Returned { values, .. } = outcome else {
+        panic!("native callback unexpectedly yielded");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+}
+
+#[test]
+fn native_raw_get_results_are_roots_after_being_detached() {
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+    let owner = runtime.allocate_table(0, 1).unwrap();
+    let child = answer_table(&mut runtime, 42);
+
+    runtime
+        .raw_set(
+            owner,
+            RawValue::String(LuaString::from("child")),
+            RawValue::Table(child),
+        )
+        .unwrap();
+
+    let function = runtime
+        .allocate_native_function(
+            "detach_raw_get_result_and_collect",
+            detach_raw_get_result_and_collect,
+            Box::new([]),
+        )
+        .unwrap();
+    let invocation = runtime.function_snapshot(function).unwrap();
+
+    let outcome = Execution::new(
+        &mut runtime,
+        invocation,
+        vec![RawValue::Table(owner)].into_boxed_slice(),
+    )
+    .unwrap()
+    .run()
+    .unwrap();
+
+    let ExecutionOutcome::Returned { values, .. } = outcome else {
+        panic!("native callback unexpectedly yielded");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+}
+
+#[test]
+fn native_get_metatable_results_are_roots_after_being_detached() {
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+    let target = runtime.allocate_table(0, 0).unwrap();
+    let metatable = answer_table(&mut runtime, 42);
+
+    runtime
+        .set_metatable(&RawValue::Table(target), Some(metatable))
+        .unwrap();
+
+    let function = runtime
+        .allocate_native_function(
+            "detach_metatable_and_collect",
+            detach_metatable_and_collect,
+            Box::new([]),
+        )
+        .unwrap();
+    let invocation = runtime.function_snapshot(function).unwrap();
+
+    let outcome = Execution::new(
+        &mut runtime,
+        invocation,
+        vec![RawValue::Table(target)].into_boxed_slice(),
+    )
+    .unwrap()
+    .run()
+    .unwrap();
+
+    let ExecutionOutcome::Returned { values, .. } = outcome else {
+        panic!("native callback unexpectedly yielded");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+}
+
+#[test]
+fn native_next_results_are_roots_after_being_detached() {
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+    let table = runtime.allocate_table(0, 1).unwrap();
+    let key = answer_table(&mut runtime, 20);
+    let value = answer_table(&mut runtime, 22);
+
+    runtime
+        .raw_set(table, RawValue::Table(key), RawValue::Table(value))
+        .unwrap();
+
+    let function = runtime
+        .allocate_native_function(
+            "detach_next_results_and_collect",
+            detach_next_results_and_collect,
+            Box::new([]),
+        )
+        .unwrap();
+    let invocation = runtime.function_snapshot(function).unwrap();
+
+    let outcome = Execution::new(
+        &mut runtime,
+        invocation,
+        vec![RawValue::Table(table)].into_boxed_slice(),
+    )
+    .unwrap()
+    .run()
+    .unwrap();
+
+    let ExecutionOutcome::Returned { values, .. } = outcome else {
+        panic!("native callback unexpectedly yielded");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+}
+
+#[test]
+fn native_loaded_functions_are_roots_during_callback_collection() {
+    let mut runtime = Runtime::new(Box::new(BufferLoadService)).unwrap();
+    let function = runtime
+        .allocate_native_function(
+            "load_collect_and_invoke",
+            load_collect_and_invoke,
+            Box::new([]),
+        )
+        .unwrap();
+    let invocation = runtime.function_snapshot(function).unwrap();
+
+    let outcome = Execution::new(&mut runtime, invocation, Box::new([]))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    let ExecutionOutcome::Returned { values, .. } = outcome else {
+        panic!("native callback unexpectedly yielded");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+}
+
+#[test]
+fn suspended_native_activation_roots_its_weakly_referenced_function() {
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+    let weak = runtime.allocate_table(1, 0).unwrap();
+    let metatable = runtime.allocate_table(0, 1).unwrap();
+
+    runtime
+        .raw_set(
+            metatable,
+            RawValue::String(LuaString::from("__mode")),
+            RawValue::String(LuaString::from("v")),
+        )
+        .unwrap();
+    runtime
+        .set_metatable(&RawValue::Table(weak), Some(metatable))
+        .unwrap();
+    runtime.set_global(b"weak", RawValue::Table(weak)).unwrap();
+
+    let function = runtime
+        .allocate_native_function("yield_once", yield_once, Box::new([]))
+        .unwrap();
+
+    runtime
+        .raw_set(weak, RawValue::Integer(1), RawValue::Function(function))
+        .unwrap();
+
+    let invocation = runtime.function_snapshot(function).unwrap();
+    let outcome = Execution::new(&mut runtime, invocation, Box::new([]))
+        .unwrap()
+        .run()
+        .unwrap();
+
+    let ExecutionOutcome::Yielded {
+        values,
+        mut suspension,
+    } = outcome
+    else {
+        panic!("native callback should yield");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(1)]);
+    suspension.collect_garbage().unwrap();
+
+    let outcome = suspension
+        .resume(vec![RawValue::Integer(41)].into_boxed_slice())
+        .unwrap();
+
+    let ExecutionOutcome::Returned { values, runtime } = outcome else {
+        panic!("resumed native callback unexpectedly yielded again");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+    assert_eq!(
+        runtime.raw_get(weak, &RawValue::Integer(1)).unwrap(),
+        RawValue::Function(function)
     );
 }

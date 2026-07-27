@@ -1,7 +1,7 @@
 use orbit_common::Span;
 
 use crate::{
-    bytecode::Register,
+    bytecode::{Register, RegisterRootMap},
     error::{CompileError, CompileErrorKind},
 };
 
@@ -9,6 +9,10 @@ use crate::{
 pub(crate) struct VReg(u16);
 
 impl VReg {
+    pub(crate) const fn from_bytecode(register: Register) -> Self {
+        Self(register.0 as u16)
+    }
+
     pub(crate) fn get(self) -> u16 {
         self.0
     }
@@ -52,6 +56,9 @@ pub(crate) struct RegisterStack {
     top: u16,
     /// Maximum exclusive register index ever used
     max: u16,
+    /// Initialized register values that must be traced at the current
+    /// compiler position.
+    roots: RegisterRootMap,
 }
 
 impl RegisterStack {
@@ -60,6 +67,7 @@ impl RegisterStack {
             floor: 0,
             top: 0,
             max: 0,
+            roots: RegisterRootMap::EMPTY,
         }
     }
 
@@ -108,6 +116,7 @@ impl RegisterStack {
             "cannot release pinned registers to a higher register"
         );
 
+        self.roots.remove_range(base.get(), self.floor);
         self.floor = base.get();
         self.top = base.get();
     }
@@ -122,6 +131,12 @@ impl RegisterStack {
             range.base.get() + range.len,
             self.top,
             "promoted temporary range must end at the temporary top"
+        );
+
+        debug_assert!(
+            range
+                .iter()
+                .all(|register| { self.roots.contains(Register(register.get() as u8)) })
         );
 
         self.floor = self.top;
@@ -173,6 +188,7 @@ impl RegisterStack {
             "temporary mark is above the current top"
         );
 
+        self.roots.remove_range(mark.get(), self.top);
         self.top = mark.get();
     }
 
@@ -187,6 +203,47 @@ impl RegisterStack {
         }
 
         Ok(required as u16)
+    }
+
+    pub(crate) fn root_map(&self) -> RegisterRootMap {
+        self.roots
+    }
+
+    pub(crate) fn mark_initialized(&mut self, register: VReg) {
+        self.mark_initialized_range(RegRange {
+            base: register,
+            len: 1,
+        });
+    }
+
+    pub(crate) fn mark_initialized_range(&mut self, range: RegRange) {
+        let end = range
+            .base
+            .get()
+            .checked_add(range.len)
+            .expect("register range overflow");
+
+        assert!(
+            end <= self.max,
+            "cannot initialize a register that was never reserved"
+        );
+
+        self.roots.insert_range(range.base.get(), end);
+    }
+
+    pub(crate) fn forget_range(&mut self, range: RegRange) {
+        let end = range
+            .base
+            .get()
+            .checked_add(range.len)
+            .expect("register range overflow");
+
+        assert!(
+            end <= self.max,
+            "cannot forget a register that was never reserved"
+        );
+
+        self.roots.remove_range(range.base.get(), end);
     }
 }
 
@@ -221,6 +278,60 @@ mod tests {
     }
 
     #[test]
+    fn released_registers_are_unrooted_when_their_slots_are_reused() {
+        let mut registers = RegisterStack::new();
+
+        let locals = registers.reserve_pinned(2, span()).unwrap();
+        assert!(registers.root_map().registers().next().is_none());
+
+        registers.mark_initialized_range(locals);
+        assert_eq!(
+            registers
+                .root_map()
+                .registers()
+                .map(|register| register.0)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+
+        let temporaries = registers.reserve_temporaries(2, span()).unwrap();
+        assert_eq!(temporaries.base, VReg(2));
+        assert!(!registers.root_map().contains(Register(2)));
+        assert!(!registers.root_map().contains(Register(3)));
+
+        registers.mark_initialized_range(temporaries);
+        assert_eq!(
+            registers
+                .root_map()
+                .registers()
+                .map(|register| register.0)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+
+        registers.release_temporaries_to(registers.floor());
+        assert!(!registers.root_map().contains(Register(2)));
+        assert!(!registers.root_map().contains(Register(3)));
+
+        let reused_temporaries = registers.reserve_temporaries(2, span()).unwrap();
+        assert_eq!(reused_temporaries.base, VReg(2));
+        assert!(!registers.root_map().contains(Register(2)));
+        assert!(!registers.root_map().contains(Register(3)));
+
+        registers.mark_initialized(reused_temporaries.base);
+        assert!(registers.root_map().contains(Register(2)));
+        assert!(!registers.root_map().contains(Register(3)));
+
+        registers.release_temporaries_to(registers.floor());
+        registers.release_pinned_to(VReg(0));
+        assert!(registers.root_map().registers().next().is_none());
+
+        let reused_local = registers.reserve_pinned(1, span()).unwrap();
+        assert_eq!(reused_local.base, VReg(0));
+        assert!(!registers.root_map().contains(Register(0)));
+    }
+
+    #[test]
     fn all_256_registers_are_addressable() {
         let mut registers = RegisterStack::new();
         let range = registers.reserve_pinned(256, span()).unwrap();
@@ -249,6 +360,7 @@ mod tests {
     fn promotes_an_exact_temporary_result_window_to_pinned() {
         let mut registers = RegisterStack::new();
         let results = registers.reserve_temporaries(3, span()).unwrap();
+        registers.mark_initialized_range(results);
 
         registers.promote_temporaries_to_pinned(results);
 

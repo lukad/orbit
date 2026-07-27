@@ -288,17 +288,45 @@ impl<'runtime> Execution<'runtime> {
         }
     }
 
+    fn prepare_lua_boundary(&mut self, boundary: &FrameBoundary) -> FaultResult<()> {
+        let target = match boundary {
+            FrameBoundary::Call { base, results, .. } => Some(ResultTarget::Call {
+                base: usize::from(base.0),
+                results: *results,
+            }),
+            FrameBoundary::Invoke { target, .. } => Some(*target),
+            FrameBoundary::TailInvoke { .. }
+            | FrameBoundary::Return { .. }
+            | FrameBoundary::ReturnOwned { .. }
+            | FrameBoundary::UnwindOwned { .. } => None,
+        };
+
+        if let Some(target) = target {
+            self.active_lua_frame_mut().begin_pending_results(target)?;
+        }
+
+        Ok(())
+    }
+
     fn run_until_boundary(&mut self) -> FaultResult<FrameBoundary> {
         loop {
             self.collect_if_due()?;
 
             if let Some(boundary) = self.continue_close()? {
+                self.prepare_lua_boundary(&boundary)?;
                 return Ok(boundary);
             }
 
             let instruction = self.active_lua_frame_mut().next_instruction()?;
+            let boundary = self.dispatch(instruction)?;
 
-            if let Some(boundary) = self.dispatch(instruction)? {
+            if let Some(boundary) = &boundary {
+                self.prepare_lua_boundary(boundary)?;
+            }
+
+            self.active_lua_frame_mut().commit_instruction();
+
+            if let Some(boundary) = boundary {
                 return Ok(boundary);
             }
         }

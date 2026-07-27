@@ -134,18 +134,49 @@ impl TableData {
         std::mem::replace(&mut self.metatable, metatable)
     }
 
-    pub(crate) fn visit_objects(&self, mut visit: impl FnMut(ObjectId)) {
+    pub(crate) fn visit_metatable(&self, mut visit: impl FnMut(ObjectId)) {
         if let Some(metatable) = self.metatable {
             visit(metatable.object());
         }
+    }
 
+    pub(crate) fn visit_array_values(&self, mut visit: impl FnMut(ObjectId)) {
         for value in &self.array {
             if let Some(object) = value.object_id() {
                 visit(object);
             }
         }
+    }
 
-        self.hash.visit_objects(visit);
+    pub(crate) fn visit_hash_entries(&self, visit: impl FnMut(&TableKey, &RawValue)) {
+        self.hash.visit_live(visit);
+    }
+
+    pub(crate) fn clear_weak_entries(
+        &mut self,
+        weak_keys: bool,
+        weak_values: bool,
+        mut is_marked: impl FnMut(ObjectId) -> bool,
+    ) {
+        if weak_values {
+            for (zero_based, value) in self.array.iter_mut().enumerate() {
+                let should_clear = value.object_id().is_some_and(|object| !is_marked(object));
+
+                if should_clear {
+                    *value = RawValue::Nil;
+                    self.deleted_array_keys.insert(zero_based);
+                }
+            }
+
+            self.trim_array_tail();
+        }
+
+        self.hash.tombstone_where(|key, value| {
+            let dead_key = weak_keys && key.object_id().is_some_and(|object| !is_marked(object));
+            let dead_value =
+                weak_values && value.object_id().is_some_and(|object| !is_marked(object));
+            dead_key || dead_value
+        });
     }
 
     fn set_integer(&mut self, integer: i64, value: RawValue) -> FaultResult<()> {

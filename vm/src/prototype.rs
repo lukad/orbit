@@ -3,7 +3,7 @@ use std::rc::Rc;
 use orbit_common::Span;
 use orbit_compiler::bytecode::{
     Chunk, CloseDebugInfo, Constant, ConstantIndex, Instruction, Prototype, PrototypeIndex,
-    Register, UpvalueDescriptor, UpvalueIndex,
+    Register, RegisterRootMap, UpvalueDescriptor, UpvalueIndex,
 };
 
 use crate::{
@@ -82,6 +82,36 @@ fn load_prototype(
     strings: &[LuaString],
     prototypes: &mut Vec<Option<RuntimePrototype>>,
 ) -> FaultResult<RuntimePrototypeIndex> {
+    if prototype.max_registers > 256 {
+        return Err(VmErrorKind::InvalidPrototypeRegisterCount {
+            registers: prototype.max_registers,
+            maximum: 256,
+        });
+    }
+
+    let expected_root_maps = prototype.code.len() + 1;
+    let actual_root_maps = prototype.register_root_maps.len();
+
+    if actual_root_maps != expected_root_maps {
+        return Err(VmErrorKind::InvalidPrototypeRootMapCount {
+            expected: expected_root_maps,
+            actual: actual_root_maps,
+        });
+    }
+
+    for (pc, root_map) in prototype.register_root_maps.iter().copied().enumerate() {
+        if let Some(register) = root_map
+            .registers()
+            .find(|register| u16::from(register.0) >= prototype.max_registers)
+        {
+            return Err(VmErrorKind::InvalidPrototypeRootRegister {
+                pc,
+                register: register.0,
+                registers: prototype.max_registers,
+            });
+        }
+    }
+
     if prototype.max_registers < u16::from(prototype.parameter_count) {
         return Err(VmErrorKind::InvalidPrototypeRegisters {
             parameters: prototype.parameter_count,
@@ -160,6 +190,7 @@ fn load_prototype(
         code: prototype.code,
         close_debug: prototype.close_debug,
         source_map,
+        register_root_maps: prototype.register_root_maps,
     };
 
     prototypes[index.get()] = Some(runtime_prototype);
@@ -180,6 +211,7 @@ pub(crate) struct RuntimePrototype {
     code: Box<[Instruction]>,
     close_debug: Box<[CloseDebugInfo]>,
     source_map: Box<[(u32, Span)]>,
+    register_root_maps: Box<[RegisterRootMap]>,
 }
 
 impl RuntimePrototype {
@@ -201,6 +233,10 @@ impl RuntimePrototype {
 
     pub(crate) fn max_registers(&self) -> u16 {
         self.max_registers
+    }
+
+    pub(crate) fn register_root_map(&self, pc: usize) -> Option<RegisterRootMap> {
+        self.register_root_maps.get(pc).copied()
     }
 
     pub(crate) fn instruction(&self, pc: usize) -> Option<&Instruction> {
@@ -263,8 +299,10 @@ pub(crate) enum CaptureDescriptor {
 #[cfg(test)]
 mod tests {
     use orbit_common::{SourceId, Span};
-    use orbit_compiler::bytecode::{Chunk, SourceMapEntry};
+    use orbit_compiler::bytecode::{Chunk, Register, RegisterRootMap, SourceMapEntry};
     use orbit_parser::{lexer::lex, parser::parse_chunk};
+
+    use crate::error::VmErrorKind;
 
     use super::PrototypeBundle;
 
@@ -310,5 +348,53 @@ mod tests {
         let prototype = bundle.prototype(bundle.entry()).unwrap();
 
         assert_eq!(prototype.instruction_span(0), None);
+    }
+
+    #[test]
+    fn rejects_incorrect_register_root_map_count() {
+        let mut chunk = compile_source(SourceId::new(0), "return 1");
+        let expected = chunk.entry.code.len() + 1;
+
+        chunk.entry.register_root_maps = Box::new([]);
+
+        assert_eq!(
+            PrototypeBundle::load(chunk).unwrap_err(),
+            VmErrorKind::InvalidPrototypeRootMapCount {
+                expected,
+                actual: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_register_root_outside_declared_frame() {
+        let mut chunk = compile_source(SourceId::new(0), "return 1");
+        let register = u8::try_from(chunk.entry.max_registers).unwrap();
+        let mut roots = RegisterRootMap::EMPTY;
+        roots.insert(Register(register));
+        chunk.entry.register_root_maps[0] = roots;
+
+        assert_eq!(
+            PrototypeBundle::load(chunk).unwrap_err(),
+            VmErrorKind::InvalidPrototypeRootRegister {
+                pc: 0,
+                register,
+                registers: u16::from(register),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_more_registers_than_root_maps_can_represent() {
+        let mut chunk = compile_source(SourceId::new(0), "return");
+        chunk.entry.max_registers = 257;
+
+        assert_eq!(
+            PrototypeBundle::load(chunk).unwrap_err(),
+            VmErrorKind::InvalidPrototypeRegisterCount {
+                registers: 257,
+                maximum: 256,
+            }
+        );
     }
 }

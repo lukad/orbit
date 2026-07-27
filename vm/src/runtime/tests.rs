@@ -1,5 +1,5 @@
 use orbit_common::{SourceId, Span};
-use orbit_compiler::bytecode::{Chunk, Prototype};
+use orbit_compiler::bytecode::{Chunk, Prototype, RegisterRootMap};
 
 use crate::{
     error::VmErrorKind,
@@ -23,6 +23,7 @@ fn empty_chunk() -> Chunk {
             upvalues: Box::new([]),
             children: Box::new([]),
             code: Box::new([]),
+            register_root_maps: vec![RegisterRootMap::EMPTY].into_boxed_slice(),
             close_debug: Box::new([]),
             source_map: Box::new([]),
         },

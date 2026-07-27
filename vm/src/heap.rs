@@ -1,13 +1,118 @@
 use crate::{
+    LuaString,
     error::{FaultResult, VmErrorKind},
     function::FunctionData,
     id::{FunctionId, ObjectId, TableId, UpvalueId},
     table::TableData,
     upvalue::UpvalueData,
+    value::RawValue,
 };
 
 const INITIAL_GENERATION: u32 = 1;
 const DEFAULT_GC_THRESHOLD: usize = 1_024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeakMode {
+    Strong,
+    Keys,
+    Values,
+    KeysAndValues,
+}
+
+impl WeakMode {
+    fn weak_keys(self) -> bool {
+        matches!(self, Self::Keys | Self::KeysAndValues)
+    }
+
+    fn weak_values(self) -> bool {
+        matches!(self, Self::Values | Self::KeysAndValues)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WeakTable {
+    table: TableId,
+    mode: WeakMode,
+}
+
+struct MarkState {
+    pending: Vec<ObjectId>,
+    weak_tables: Vec<WeakTable>,
+    ephemerons: Vec<TableId>,
+    marked_count: usize,
+}
+
+impl MarkState {
+    fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            weak_tables: Vec::new(),
+            ephemerons: Vec::new(),
+            marked_count: 0,
+        }
+    }
+
+    fn enqueue(&mut self, id: ObjectId) -> FaultResult<()> {
+        push_pending(&mut self.pending, id)
+    }
+
+    fn record_weak_table(&mut self, table: TableId, mode: WeakMode) -> FaultResult<()> {
+        let weak_requested = self.weak_tables.len().saturating_add(1);
+        self.weak_tables
+            .try_reserve(1)
+            .map_err(|_| VmErrorKind::HeapCapacityExceeded {
+                requested: weak_requested,
+            })?;
+
+        if mode == WeakMode::Keys {
+            let ephemeron_requested = self.ephemerons.len().saturating_add(1);
+            self.ephemerons
+                .try_reserve(1)
+                .map_err(|_| VmErrorKind::HeapCapacityExceeded {
+                    requested: ephemeron_requested,
+                })?;
+        }
+
+        self.weak_tables.push(WeakTable { table, mode });
+
+        if mode == WeakMode::Keys {
+            self.ephemerons.push(table);
+        }
+
+        Ok(())
+    }
+}
+
+struct MarkSnapshot {
+    generations: Vec<Option<u32>>,
+}
+
+impl MarkSnapshot {
+    fn new(slots: &[HeapSlot]) -> FaultResult<Self> {
+        let requested = slots.len();
+        let mut generations = Vec::new();
+
+        generations
+            .try_reserve(requested)
+            .map_err(|_| VmErrorKind::HeapCapacityExceeded { requested })?;
+
+        generations.extend(slots.iter().map(|slot| {
+            if slot.marked && slot.object.is_some() {
+                Some(slot.generation)
+            } else {
+                None
+            }
+        }));
+
+        Ok(Self { generations })
+    }
+
+    fn is_marked(&self, id: ObjectId) -> bool {
+        self.generations
+            .get(id.slot() as usize)
+            .is_some_and(|generation| *generation == Some(id.generation()))
+    }
+}
 
 pub(crate) struct Heap {
     slots: Vec<HeapSlot>,
@@ -87,6 +192,10 @@ impl Heap {
         self.occupied_len() * size_of::<HeapSlot>()
     }
 
+    pub(crate) fn record_allocation_debt(&mut self, units: usize) {
+        self.allocation_debt = self.allocation_debt.saturating_add(units);
+    }
+
     #[cfg(test)]
     pub(crate) fn allocation_debt(&self) -> usize {
         self.allocation_debt
@@ -111,10 +220,13 @@ impl Heap {
     ) -> FaultResult<usize> {
         self.clear_marks();
 
-        if let Err(error) = self.mark_reachable(roots) {
-            self.clear_marks();
-            return Err(error);
-        }
+        let weak_tables = match self.mark_reachable(roots) {
+            Ok(weak_tables) => weak_tables,
+            Err(error) => {
+                self.clear_marks();
+                return Err(error);
+            }
+        };
 
         let reusable = self
             .slots
@@ -128,6 +240,28 @@ impl Heap {
             self.clear_marks();
 
             return Err(VmErrorKind::HeapCapacityExceeded { requested });
+        }
+
+        let marks = match MarkSnapshot::new(&self.slots) {
+            Ok(marks) => marks,
+            Err(error) => {
+                self.clear_marks();
+                return Err(error);
+            }
+        };
+
+        for weak in weak_tables {
+            let table = match self.table_mut(weak.table) {
+                Ok(table) => table,
+                Err(error) => {
+                    self.clear_marks();
+                    return Err(error);
+                }
+            };
+
+            table.clear_weak_entries(weak.mode.weak_keys(), weak.mode.weak_values(), |id| {
+                marks.is_marked(id)
+            });
         }
 
         let mut reclaimed = 0;
@@ -166,14 +300,69 @@ impl Heap {
         Ok(reclaimed)
     }
 
-    fn mark_reachable(&mut self, roots: impl IntoIterator<Item = ObjectId>) -> FaultResult<()> {
-        let mut pending = Vec::new();
+    fn mark_reachable(
+        &mut self,
+        roots: impl IntoIterator<Item = ObjectId>,
+    ) -> FaultResult<Vec<WeakTable>> {
+        let mut state = MarkState::new();
 
         for root in roots {
-            push_pending(&mut pending, root)?;
+            state.enqueue(root)?;
         }
 
-        while let Some(id) = pending.pop() {
+        self.drain_pending(&mut state)?;
+
+        loop {
+            let marked_before = state.marked_count;
+            let mut ephemeron_index = 0;
+
+            while ephemeron_index < state.ephemerons.len() {
+                let table = self.table(state.ephemerons[ephemeron_index])?;
+                ephemeron_index += 1;
+
+                let mut trace_error = None;
+
+                table.visit_hash_entries(|key, value| {
+                    if trace_error.is_some() {
+                        return;
+                    }
+
+                    let key_reachable = match key.object_id() {
+                        None => true,
+                        Some(key) => match self.is_marked(key) {
+                            Ok(marked) => marked,
+                            Err(error) => {
+                                trace_error = Some(error);
+                                return;
+                            }
+                        },
+                    };
+
+                    if key_reachable
+                        && let Some(value) = value.object_id()
+                        && let Err(error) = state.enqueue(value)
+                    {
+                        trace_error = Some(error);
+                    }
+                });
+
+                if let Some(error) = trace_error {
+                    return Err(error);
+                }
+            }
+
+            self.drain_pending(&mut state)?;
+
+            if state.marked_count == marked_before {
+                break;
+            }
+        }
+
+        Ok(state.weak_tables)
+    }
+
+    fn drain_pending(&mut self, state: &mut MarkState) -> FaultResult<()> {
+        while let Some(id) = state.pending.pop() {
             let slot = self.resolve_slot_mut(id)?;
 
             if slot.marked {
@@ -181,30 +370,120 @@ impl Heap {
             }
 
             slot.marked = true;
+            state.marked_count = state.marked_count.saturating_add(1);
 
-            let object = slot
-                .object
-                .as_ref()
-                .expect("resolved heap slots contain an object");
-
-            let mut capacity_error = None;
-
-            object.visit_objects(|child| {
-                if capacity_error.is_some() {
-                    return;
+            match self.object(id)? {
+                HeapObject::Table(table) => {
+                    self.trace_table(TableId::from_object(id), table, state)?;
                 }
+                object => {
+                    let mut capacity_error = None;
 
-                if let Err(error) = push_pending(&mut pending, child) {
-                    capacity_error = Some(error);
+                    object.visit_objects(|child| {
+                        if capacity_error.is_some() {
+                            return;
+                        }
+
+                        if let Err(error) = state.enqueue(child) {
+                            capacity_error = Some(error);
+                        }
+                    });
+
+                    if let Some(error) = capacity_error {
+                        return Err(error);
+                    }
                 }
-            });
-
-            if let Some(error) = capacity_error {
-                return Err(error);
             }
         }
 
         Ok(())
+    }
+
+    fn trace_table(
+        &self,
+        id: TableId,
+        table: &TableData,
+        state: &mut MarkState,
+    ) -> FaultResult<()> {
+        let mode = self.table_weak_mode(table)?;
+        let mut trace_error = None;
+
+        table.visit_metatable(|metatable| {
+            if let Err(error) = state.enqueue(metatable) {
+                trace_error = Some(error);
+            }
+        });
+
+        if let Some(error) = trace_error.take() {
+            return Err(error);
+        }
+
+        if mode != WeakMode::Strong {
+            state.record_weak_table(id, mode)?;
+        }
+
+        if !mode.weak_values() {
+            table.visit_array_values(|value| {
+                if trace_error.is_some() {
+                    return;
+                }
+
+                if let Err(error) = state.enqueue(value) {
+                    trace_error = Some(error);
+                }
+            });
+        }
+
+        if let Some(error) = trace_error.take() {
+            return Err(error);
+        }
+
+        table.visit_hash_entries(|key, value| {
+            if trace_error.is_some() {
+                return;
+            }
+
+            // Keys are strong in Strong and Values modes.
+            if !mode.weak_keys()
+                && let Some(key) = key.object_id()
+                && let Err(error) = state.enqueue(key)
+            {
+                trace_error = Some(error);
+                return;
+            }
+
+            let value_is_strong = match mode {
+                WeakMode::Strong => true,
+                WeakMode::Values | WeakMode::KeysAndValues => false,
+                WeakMode::Keys => match key.object_id() {
+                    None => true,
+                    Some(key) => match self.is_marked(key) {
+                        Ok(marked) => marked,
+                        Err(error) => {
+                            trace_error = Some(error);
+                            return;
+                        }
+                    },
+                },
+            };
+
+            if value_is_strong
+                && let Some(value) = value.object_id()
+                && let Err(error) = state.enqueue(value)
+            {
+                trace_error = Some(error);
+            }
+        });
+
+        if let Some(error) = trace_error {
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    fn is_marked(&self, id: ObjectId) -> FaultResult<bool> {
+        Ok(self.resolve_slot(id)?.marked)
     }
 
     fn clear_marks(&mut self) {
@@ -228,9 +507,11 @@ impl Heap {
             slot.marked = false;
             slot.object = Some(object);
 
-            self.allocation_debt = self.allocation_debt.saturating_add(1);
+            let generation = slot.generation;
 
-            return Ok(ObjectId::new(slot_index, slot.generation));
+            self.record_allocation_debt(1);
+
+            return Ok(ObjectId::new(slot_index, generation));
         }
 
         let slot_index =
@@ -250,7 +531,7 @@ impl Heap {
             object: Some(object),
         });
 
-        self.allocation_debt = self.allocation_debt.saturating_add(1);
+        self.record_allocation_debt(1);
 
         Ok(ObjectId::new(slot_index, INITIAL_GENERATION))
     }
@@ -294,6 +575,30 @@ impl Heap {
 
         Ok(slot)
     }
+
+    fn table_weak_mode(&self, table: &TableData) -> FaultResult<WeakMode> {
+        let Some(metatable) = table.metatable() else {
+            return Ok(WeakMode::Strong);
+        };
+
+        let mode = self
+            .table(metatable)?
+            .raw_get(&RawValue::String(LuaString::from("__mode")));
+
+        let RawValue::String(mode) = mode else {
+            return Ok(WeakMode::Strong);
+        };
+
+        let weak_keys = mode.as_bytes().contains(&b'k');
+        let weak_values = mode.as_bytes().contains(&b'v');
+
+        Ok(match (weak_keys, weak_values) {
+            (false, false) => WeakMode::Strong,
+            (true, false) => WeakMode::Keys,
+            (false, true) => WeakMode::Values,
+            (true, true) => WeakMode::KeysAndValues,
+        })
+    }
 }
 
 impl Default for Heap {
@@ -319,7 +624,7 @@ impl HeapObject {
 
     fn visit_objects(&self, visit: impl FnMut(ObjectId)) {
         match self {
-            Self::Table(table) => table.visit_objects(visit),
+            Self::Table(_table) => unreachable!("tables require mode-aware tracing"),
             Self::Function(function) => function.visit_objects(visit),
             Self::Upvalue(upvalue) => upvalue.visit_objects(visit),
         }

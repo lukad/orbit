@@ -136,10 +136,13 @@ impl Execution<'_> {
 
         match semantics::binary(operation, &left, &right) {
             Ok(result) => {
+                if operation == BinaryOp::Concat {
+                    self.runtime.record_gc_allocation(1);
+                }
+
                 self.write_register(destination, result)?;
                 Ok(None)
             }
-
             Err(error) => {
                 let Some(name) = binary_metamethod_name(operation) else {
                     return Err(error);

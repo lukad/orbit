@@ -3,7 +3,11 @@ use orbit_compiler::bytecode::Chunk;
 use orbit_parser::{lexer::lex, parser::parse_chunk};
 
 use crate::{
-    error::VmResult, loading::NoLoadService, runtime::Runtime, string::LuaString, value::RawValue,
+    error::{VmErrorKind, VmResult, VmTraceFrame},
+    loading::NoLoadService,
+    runtime::Runtime,
+    string::LuaString,
+    value::RawValue,
 };
 
 use super::{Execution, ExecutionOutcome, FrameBoundary};
@@ -283,6 +287,29 @@ fn tail_invoke_replaces_the_active_activation() {
     };
 
     assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+}
+
+#[test]
+fn failed_dispatch_keeps_gc_pc_on_the_failing_instruction() {
+    let chunk = compile_source("return {} + nil");
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+    let function = runtime.load_chunk_raw(chunk).unwrap();
+    let function = runtime.function_snapshot(function).unwrap();
+    let mut execution = Execution::new(&mut runtime, function, Box::new([])).unwrap();
+
+    let error = match execution.run_until_boundary() {
+        Err(error) => error,
+        Ok(_) => panic!("invalid addition unexpectedly reached a frame boundary"),
+    };
+
+    assert!(matches!(error, VmErrorKind::InvalidAddOperands { .. }));
+
+    let frame = execution.active_lua_frame();
+    let VmTraceFrame::Lua { pc, .. } = frame.trace_frame() else {
+        panic!("failing instruction should produce a Lua trace frame");
+    };
+
+    assert_eq!(frame.gc_pc_for_test(), pc);
 }
 
 #[test]

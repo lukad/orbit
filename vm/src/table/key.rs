@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum TableKey {
+pub(crate) enum TableKey {
     Boolean(bool),
     Integer(i64),
     Float(FloatKey),
@@ -36,7 +36,7 @@ impl TableKey {
         }
     }
 
-    pub(super) fn object_id(&self) -> Option<ObjectId> {
+    pub(crate) fn object_id(&self) -> Option<ObjectId> {
         match self {
             Self::Table(id) => Some(id.object()),
             Self::Function(id) => Some(id.object()),
@@ -46,7 +46,7 @@ impl TableKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct FloatKey(u64);
+pub(crate) struct FloatKey(u64);
 
 impl FloatKey {
     fn new(value: f64) -> Self {

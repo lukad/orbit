@@ -19,6 +19,54 @@ use crate::{
 
 use super::activation::{OpenExtent, ResultTarget};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingDefinitions {
+    start: usize,
+    end: usize,
+}
+
+impl PendingDefinitions {
+    fn for_target(target: ResultTarget, declared_registers: usize) -> FaultResult<Option<Self>> {
+        let (start, count) = match target {
+            ResultTarget::Call {
+                base,
+                results: Count::Fixed(count),
+            } => (base, usize::from(count)),
+
+            ResultTarget::Call {
+                results: Count::Open,
+                ..
+            } => return Ok(None),
+
+            ResultTarget::GenericFor { start, variables } => (start, variables),
+
+            ResultTarget::Index { destination }
+            | ResultTarget::Operator { destination }
+            | ResultTarget::Comparison { destination } => (usize::from(destination.0), 1),
+
+            ResultTarget::NewIndex | ResultTarget::Close => return Ok(None),
+        };
+
+        if count == 0 {
+            return Ok(None);
+        }
+
+        let end = start
+            .checked_add(count)
+            .ok_or(VmErrorKind::InvalidRegisterRange { start, count })?;
+
+        if end > declared_registers {
+            return Err(VmErrorKind::InvalidRegisterRange { start, count });
+        }
+
+        Ok(Some(Self { start, end }))
+    }
+
+    fn contains(self, index: usize) -> bool {
+        self.start <= index && index < self.end
+    }
+}
+
 pub(crate) struct CallFrame {
     function: FunctionId,
     bundle: Rc<PrototypeBundle>,
@@ -32,6 +80,8 @@ pub(crate) struct CallFrame {
     open_results: Option<OpenExtent>,
     pc: usize,
     current_pc: Option<usize>,
+    pending_definitions: Option<PendingDefinitions>,
+    gc_pc: usize,
 }
 
 /// Reusable heap-backed portions of a completed Lua frame.
@@ -170,6 +220,8 @@ impl CallFrame {
             open_results: None,
             pc: 0,
             current_pc: None,
+            pending_definitions: None,
+            gc_pc: 0,
         })
     }
 
@@ -292,10 +344,16 @@ impl CallFrame {
         self.varargs.clear();
         self.varargs.extend_from_slice(extra_arguments);
 
+        self.pending_definitions = None;
+        self.gc_pc = 0;
+
         Ok(())
     }
 
     pub(crate) fn next_instruction(&mut self) -> FaultResult<Instruction> {
+        debug_assert_eq!(self.gc_pc, self.pc);
+        debug_assert!(self.pending_definitions.is_none());
+
         let pc = self.pc;
         self.current_pc = Some(pc);
 
@@ -854,7 +912,7 @@ impl CallFrame {
         target: ResultTarget,
         values: &[RawValue],
     ) -> FaultResult<()> {
-        match target {
+        let result = match target {
             ResultTarget::Call { base, results } => match results {
                 Count::Fixed(count) => {
                     self.reset_open_results();
@@ -875,7 +933,13 @@ impl CallFrame {
                 self.set_register(runtime, destination, RawValue::Boolean(result))
             }
             ResultTarget::NewIndex | ResultTarget::Close => Ok(()),
+        };
+
+        if result.is_ok() {
+            self.complete_pending_results(target)?;
         }
+
+        result
     }
 
     pub(crate) fn accept_results_from_frame(
@@ -889,7 +953,7 @@ impl CallFrame {
         let (source_start, source_count) =
             source.return_register_range(source_base, source_values)?;
 
-        match target {
+        let result = match target {
             ResultTarget::Call { base, results } => match results {
                 Count::Fixed(count) => {
                     self.reset_open_results();
@@ -937,7 +1001,13 @@ impl CallFrame {
                 self.set_register(runtime, destination, RawValue::Boolean(result))
             }
             ResultTarget::NewIndex | ResultTarget::Close => Ok(()),
+        };
+
+        if result.is_ok() {
+            self.complete_pending_results(target)?;
         }
+
+        result
     }
 
     pub(crate) fn apply_jump(&mut self, offset: i32) -> FaultResult<()> {
@@ -972,17 +1042,60 @@ impl CallFrame {
     }
 
     pub(crate) fn visit_roots(&self, mut visit: impl FnMut(ObjectId)) {
+        visit(self.function.object());
+
         for upvalue in self.upvalues.iter() {
             visit(upvalue.object());
         }
 
-        for register in &self.registers {
-            if let Some(upvalue) = register.captured_id() {
+        let roots = self
+            .runtime_prototype
+            .register_root_map(self.gc_pc)
+            .expect("validated register-root map for GC PC");
+
+        let declared = self
+            .registers
+            .get(..self.declared_registers)
+            .expect("frame contains every declared register");
+
+        for (index, slot) in declared.iter().enumerate() {
+            if let Some(upvalue) = slot.captured_id() {
                 visit(upvalue.object());
-            } else if let Some(value) = register.direct_value()
+                continue;
+            }
+
+            let register =
+                Register(u8::try_from(index).expect("validated frame has at most 256 registers"));
+
+            if !roots.contains(register) {
+                continue;
+            }
+
+            if self
+                .pending_definitions
+                .is_some_and(|pending| pending.contains(index))
+            {
+                continue;
+            }
+
+            if let Some(value) = slot.direct_value()
                 && let Some(object) = value.object_id()
             {
                 visit(object);
+            }
+        }
+
+        if let Some(extent) = self.open_results {
+            for index in extent.base..extent.top {
+                if let Some(slot) = self.registers.get(index) {
+                    visit_register_slot(slot, &mut visit);
+                }
+            }
+        }
+
+        for register in &self.close {
+            if let Some(slot) = self.registers.get(usize::from(register.0)) {
+                visit_register_slot(slot, &mut visit);
             }
         }
 
@@ -1122,6 +1235,47 @@ impl CallFrame {
             None
         }
     }
+
+    pub(crate) fn begin_pending_results(&mut self, target: ResultTarget) -> FaultResult<()> {
+        let pending = PendingDefinitions::for_target(target, self.declared_registers)?;
+
+        if let Some(pending) = pending {
+            debug_assert!(self.pending_definitions.is_none());
+            self.pending_definitions = Some(pending);
+        }
+
+        Ok(())
+    }
+
+    fn complete_pending_results(&mut self, target: ResultTarget) -> FaultResult<()> {
+        let expected = PendingDefinitions::for_target(target, self.declared_registers)?;
+
+        if let Some(expected) = expected {
+            debug_assert_eq!(self.pending_definitions, Some(expected));
+            self.pending_definitions = None;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn commit_instruction(&mut self) {
+        self.gc_pc = self.pc;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gc_pc_for_test(&self) -> usize {
+        self.gc_pc
+    }
+}
+
+fn visit_register_slot(slot: &RegisterSlot, visit: &mut impl FnMut(ObjectId)) {
+    if let Some(upvalue) = slot.captured_id() {
+        visit(upvalue.object());
+    } else if let Some(value) = slot.direct_value()
+        && let Some(object) = value.object_id()
+    {
+        visit(object);
+    }
 }
 
 pub(crate) fn offset_register(base: Register, offset: u8) -> FaultResult<Register> {
@@ -1170,7 +1324,7 @@ fn invalid_prototype(prototype: RuntimePrototypeIndex) -> VmErrorKind {
 #[cfg(test)]
 mod tests {
     use orbit_common::SourceId;
-    use orbit_compiler::bytecode::Chunk;
+    use orbit_compiler::bytecode::{Chunk, Instruction, Register};
     use orbit_parser::{lexer::lex, parser::parse_chunk};
 
     use crate::{
@@ -1178,7 +1332,7 @@ mod tests {
         value::RawValue,
     };
 
-    use super::CallFrame;
+    use super::{CallFrame, ResultTarget};
 
     fn compile_source(source: &str) -> Chunk {
         let source_id = SourceId::new(0);
@@ -1203,6 +1357,23 @@ mod tests {
         let frame = CallFrame::new(invocation, &[]).unwrap();
 
         (runtime, frame)
+    }
+
+    fn return_pc(frame: &CallFrame) -> usize {
+        (0..frame.runtime_prototype.code_len())
+            .find(|&pc| {
+                matches!(
+                    frame.runtime_prototype.instruction(pc),
+                    Some(Instruction::Return { .. })
+                )
+            })
+            .expect("test function has a return instruction")
+    }
+
+    fn roots(frame: &CallFrame) -> Vec<crate::id::ObjectId> {
+        let mut roots = Vec::new();
+        frame.visit_roots(|root| roots.push(root));
+        roots
     }
 
     #[test]
@@ -1243,5 +1414,188 @@ mod tests {
 
         assert_eq!(consumed.as_ref(), &[RawValue::Integer(1)]);
         assert_eq!(frame.registers.len(), declared);
+    }
+
+    #[test]
+    fn register_root_map_omits_released_direct_registers() {
+        let (mut runtime, mut frame) = frame(
+            r#"
+                local live = {}
+                do local dead = {} end
+                return live
+            "#,
+        );
+        let live = runtime.allocate_table(0, 0).unwrap();
+        let dead = runtime.allocate_table(0, 0).unwrap();
+
+        frame
+            .set_register(&mut runtime, Register(0), RawValue::Table(live))
+            .unwrap();
+        frame
+            .set_register(&mut runtime, Register(1), RawValue::Table(dead))
+            .unwrap();
+        frame.gc_pc = return_pc(&frame) - 1;
+
+        let roots = roots(&frame);
+
+        assert!(roots.contains(&frame.function.object()));
+        assert!(roots.contains(&live.object()));
+        assert!(!roots.contains(&dead.object()));
+    }
+
+    #[test]
+    fn pending_direct_result_is_suppressed_until_acceptance() {
+        let (mut runtime, mut frame) = frame("local value = {}; return value");
+        let stale = runtime.allocate_table(0, 0).unwrap();
+        let result = runtime.allocate_table(0, 0).unwrap();
+        let target = ResultTarget::Index {
+            destination: Register(0),
+        };
+
+        frame
+            .set_register(&mut runtime, Register(0), RawValue::Table(stale))
+            .unwrap();
+        frame.gc_pc = return_pc(&frame);
+        frame.begin_pending_results(target).unwrap();
+
+        assert!(!roots(&frame).contains(&stale.object()));
+
+        frame
+            .accept_results(&mut runtime, target, &[RawValue::Table(result)])
+            .unwrap();
+
+        let roots = roots(&frame);
+        assert!(!roots.contains(&stale.object()));
+        assert!(roots.contains(&result.object()));
+    }
+
+    #[test]
+    fn captured_pending_result_remains_an_upvalue_root() {
+        let (mut runtime, mut frame) = frame("local value = {}; return value");
+        let value = runtime.allocate_table(0, 0).unwrap();
+
+        frame
+            .set_register(&mut runtime, Register(0), RawValue::Table(value))
+            .unwrap();
+        let upvalue = frame.capture_register(&mut runtime, Register(0)).unwrap();
+        frame.gc_pc = return_pc(&frame);
+        frame
+            .begin_pending_results(ResultTarget::Index {
+                destination: Register(0),
+            })
+            .unwrap();
+
+        assert!(roots(&frame).contains(&upvalue.object()));
+    }
+
+    #[test]
+    fn close_register_overrides_an_empty_static_root_map() {
+        let (mut runtime, mut frame) = frame("local value = {}; return value");
+        let value = runtime.allocate_table(0, 0).unwrap();
+
+        frame
+            .set_register(&mut runtime, Register(0), RawValue::Table(value))
+            .unwrap();
+        frame.mark_to_close(Register(0)).unwrap();
+        frame.gc_pc = 0;
+
+        assert!(roots(&frame).contains(&value.object()));
+    }
+
+    #[test]
+    fn open_results_override_an_empty_terminal_root_map() {
+        let (mut runtime, mut frame) = frame("return");
+        let value = runtime.allocate_table(0, 0).unwrap();
+        let base = frame.declared_registers;
+
+        frame
+            .set_open_results(&mut runtime, base, &[RawValue::Table(value)])
+            .unwrap();
+        frame.gc_pc = frame.runtime_prototype.code_len();
+
+        assert!(roots(&frame).contains(&value.object()));
+    }
+
+    #[test]
+    fn varargs_and_active_function_are_always_roots() {
+        let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+        let function = runtime
+            .load_chunk_raw(compile_source("return ..."))
+            .unwrap();
+        let argument = runtime.allocate_table(0, 0).unwrap();
+        let invocation = match runtime.function_snapshot(function).unwrap() {
+            FunctionSnapshot::Lua(invocation) => invocation,
+            FunctionSnapshot::Native(_) => {
+                panic!("compiled chunks produce Lua functions")
+            }
+        };
+        let frame = CallFrame::new(invocation, &[RawValue::Table(argument)]).unwrap();
+        let roots = roots(&frame);
+
+        assert!(roots.contains(&function.object()));
+        assert!(roots.contains(&argument.object()));
+    }
+
+    #[test]
+    fn result_targets_define_the_expected_pending_ranges() {
+        use orbit_compiler::bytecode::Count;
+
+        assert_eq!(
+            super::PendingDefinitions::for_target(
+                ResultTarget::Call {
+                    base: 2,
+                    results: Count::Fixed(3),
+                },
+                8,
+            )
+            .unwrap(),
+            Some(super::PendingDefinitions { start: 2, end: 5 })
+        );
+        assert_eq!(
+            super::PendingDefinitions::for_target(
+                ResultTarget::GenericFor {
+                    start: 4,
+                    variables: 2,
+                },
+                8,
+            )
+            .unwrap(),
+            Some(super::PendingDefinitions { start: 4, end: 6 })
+        );
+
+        for target in [
+            ResultTarget::Index {
+                destination: Register(3),
+            },
+            ResultTarget::Operator {
+                destination: Register(3),
+            },
+            ResultTarget::Comparison {
+                destination: Register(3),
+            },
+        ] {
+            assert_eq!(
+                super::PendingDefinitions::for_target(target, 8).unwrap(),
+                Some(super::PendingDefinitions { start: 3, end: 4 })
+            );
+        }
+
+        for target in [
+            ResultTarget::Call {
+                base: 2,
+                results: Count::Open,
+            },
+            ResultTarget::Call {
+                base: 2,
+                results: Count::Fixed(0),
+            },
+            ResultTarget::NewIndex,
+            ResultTarget::Close,
+        ] {
+            assert_eq!(
+                super::PendingDefinitions::for_target(target, 8).unwrap(),
+                None
+            );
+        }
     }
 }

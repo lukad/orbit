@@ -636,7 +636,7 @@ impl<'hir> FunctionCompiler<'hir> {
         let scope = *self.scopes.last().expect("scope stack must not be empty");
 
         if emit_runtime_close && self.active_scope_requires_close(scope) {
-            self.emitter.emit(
+            self.emit_instruction(
                 span,
                 Instruction::CloseFrom {
                     base: scope.register_base.to_bytecode(span)?,
@@ -695,6 +695,106 @@ impl<'hir> FunctionCompiler<'hir> {
             .min()
     }
 
+    fn emit_instruction(
+        &mut self,
+        span: Span,
+        instruction: Instruction,
+    ) -> Result<u32, CompileError> {
+        let roots = self.registers.root_map();
+        let pc = self.emitter.emit(span, roots, instruction)?;
+
+        match instruction {
+            Instruction::LoadNil { dst }
+            | Instruction::LoadBool { dst, .. }
+            | Instruction::LoadSmallInt { dst, .. }
+            | Instruction::LoadConst { dst, .. }
+            | Instruction::Move { dst, .. }
+            | Instruction::GetUpvalue { dst, .. }
+            | Instruction::NewTable { dst, .. }
+            | Instruction::GetTable { dst, .. }
+            | Instruction::Unary { dst, .. }
+            | Instruction::Binary { dst, .. }
+            | Instruction::BinarySmallInt { dst, .. }
+            | Instruction::Closure { dst, .. } => {
+                self.registers.mark_initialized(VReg::from_bytecode(dst));
+            }
+            Instruction::Vararg {
+                base,
+                results: Count::Fixed(count),
+            } => {
+                self.registers.mark_initialized_range(RegRange {
+                    base: VReg::from_bytecode(base),
+                    len: u16::from(count),
+                });
+            }
+            _ => (),
+        }
+
+        Ok(pc)
+    }
+
+    fn emit_jump(&mut self, span: Span, target: CodeLabel) -> Result<(), CompileError> {
+        self.emitter.jump(span, self.registers.root_map(), target)
+    }
+
+    fn emit_jump_if_falsy(
+        &mut self,
+        span: Span,
+        condition: VReg,
+        target: CodeLabel,
+    ) -> Result<(), CompileError> {
+        self.emitter
+            .jump_if_falsy(span, self.registers.root_map(), condition, target)
+    }
+
+    fn emit_jump_if_not_equal_small_int(
+        &mut self,
+        span: Span,
+        register: VReg,
+        immediate: i16,
+        side: ImmediateOperandSide,
+        target: CodeLabel,
+    ) -> Result<(), CompileError> {
+        self.emitter.jump_if_not_equal_small_int(
+            span,
+            self.registers.root_map(),
+            register,
+            immediate,
+            side,
+            target,
+        )
+    }
+
+    fn emit_for_prep(
+        &mut self,
+        span: Span,
+        base: VReg,
+        exit: CodeLabel,
+    ) -> Result<(), CompileError> {
+        self.emitter
+            .for_prep(span, self.registers.root_map(), base, exit)
+    }
+
+    fn emit_for_loop(
+        &mut self,
+        span: Span,
+        base: VReg,
+        body: CodeLabel,
+    ) -> Result<(), CompileError> {
+        self.emitter
+            .for_loop(span, self.registers.root_map(), base, body)
+    }
+
+    fn emit_tfor_loop(
+        &mut self,
+        span: Span,
+        base: VReg,
+        body: CodeLabel,
+    ) -> Result<(), CompileError> {
+        self.emitter
+            .tfor_loop(span, self.registers.root_map(), base, body)
+    }
+
     fn emit_goto(
         &mut self,
         target: LabelId,
@@ -735,7 +835,7 @@ impl<'hir> FunctionCompiler<'hir> {
         }
 
         if let Some(base) = close_from {
-            self.emitter.emit(
+            self.emit_instruction(
                 span,
                 Instruction::CloseFrom {
                     base: base.to_bytecode(span)?,
@@ -743,7 +843,7 @@ impl<'hir> FunctionCompiler<'hir> {
             )?;
         }
 
-        self.emitter.jump(span, self.hir_labels[target.0 as usize])
+        self.emit_jump(span, self.hir_labels[target.0 as usize])
     }
 
     fn emit_label(
@@ -776,7 +876,7 @@ impl<'hir> FunctionCompiler<'hir> {
         // at a trailing label. Gotos do the same cleanup at their source, so
         // binding after this instruction gives every incoming edge one close.
         if falls_through && let Some(base) = self.local_suffix_close_base(&retained) {
-            self.emitter.emit(
+            self.emit_instruction(
                 span,
                 Instruction::CloseFrom {
                     base: base.to_bytecode(span)?,
@@ -854,7 +954,7 @@ impl<'hir> FunctionCompiler<'hir> {
                     }
                 };
 
-                self.emitter.jump(branch.span, end)?;
+                self.emit_jump(branch.span, end)?;
             }
 
             self.emitter.bind(next);
@@ -904,7 +1004,7 @@ impl<'hir> FunctionCompiler<'hir> {
                 let register = self.registers.reserve_temporaries(1, condition_span)?.base;
 
                 self.emit_one(register_source, register)?;
-                self.emitter.jump_if_not_equal_small_int(
+                self.emit_jump_if_not_equal_small_int(
                     condition_span,
                     register,
                     immediate,
@@ -920,8 +1020,7 @@ impl<'hir> FunctionCompiler<'hir> {
         let condition_register = self.registers.reserve_temporaries(1, condition_span)?.base;
 
         self.emit_one(condition, condition_register)?;
-        self.emitter
-            .jump_if_falsy(condition_span, condition_register, target)?;
+        self.emit_jump_if_falsy(condition_span, condition_register, target)?;
         self.registers.release_temporaries_to(mark);
 
         Ok(())
@@ -993,7 +1092,7 @@ impl<'hir> FunctionCompiler<'hir> {
         }
 
         if let Some(base) = close_from {
-            self.emitter.emit(
+            self.emit_instruction(
                 span,
                 Instruction::CloseFrom {
                     base: base.to_bytecode(span)?,
@@ -1001,7 +1100,7 @@ impl<'hir> FunctionCompiler<'hir> {
             )?;
         }
 
-        self.emitter.jump(span, loop_state.break_label)?;
+        self.emit_jump(span, loop_state.break_label)?;
 
         self.loop_targets[target.0 as usize]
             .as_mut()
@@ -1038,7 +1137,7 @@ impl<'hir> FunctionCompiler<'hir> {
         self.deactivate_loop(loop_id);
 
         if body_falls_through {
-            self.emitter.jump(span, condition_label)?;
+            self.emit_jump(span, condition_label)?;
         }
 
         self.emitter.bind(break_label);
@@ -1092,14 +1191,12 @@ impl<'hir> FunctionCompiler<'hir> {
 
                 let close_base = scope.register_base.to_bytecode(span)?;
 
-                self.emitter
-                    .emit(span, Instruction::CloseFrom { base: close_base })?;
-                self.emitter.jump(span, break_label)?;
+                self.emit_instruction(span, Instruction::CloseFrom { base: close_base })?;
+                self.emit_jump(span, break_label)?;
 
                 self.emitter.bind(continue_label);
-                self.emitter
-                    .emit(span, Instruction::CloseFrom { base: close_base })?;
-                self.emitter.jump(span, body_label)?;
+                self.emit_instruction(span, Instruction::CloseFrom { base: close_base })?;
+                self.emit_jump(span, body_label)?;
             } else {
                 self.emit_condition_jump_if_falsy(condition, body_label)?;
             }
@@ -1151,7 +1248,7 @@ impl<'hir> FunctionCompiler<'hir> {
         match step {
             Some(step) => self.emit_one(step, step_register)?,
             None => {
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::LoadSmallInt {
                         dst: step_register.to_bytecode(span)?,
@@ -1184,7 +1281,8 @@ impl<'hir> FunctionCompiler<'hir> {
         variable_slot.state = LocalState::Active;
         self.active_locals.push(variable);
 
-        self.emitter.for_prep(span, control_base, exit_label)?;
+        self.emit_for_prep(span, control_base, exit_label)?;
+        self.registers.mark_initialized(variable_register);
         self.emitter.bind(body_label);
 
         let body_falls_through = self.emit_block_stmts(body)?;
@@ -1192,7 +1290,7 @@ impl<'hir> FunctionCompiler<'hir> {
         self.leave_scope(body_span, body_falls_through)?;
 
         if body_falls_through {
-            self.emitter.for_loop(span, control_base, body_label)?;
+            self.emit_for_loop(span, control_base, body_label)?;
         }
 
         let _ = self.deactivate_loop(loop_id);
@@ -1240,7 +1338,7 @@ impl<'hir> FunctionCompiler<'hir> {
         self.registers.promote_temporaries_to_pinned(controls);
 
         let closer = control_base.offset(3);
-        let close_pc = self.emitter.emit(
+        let close_pc = self.emit_instruction(
             span,
             Instruction::MarkToClose {
                 register: closer.to_bytecode(span)?,
@@ -1278,7 +1376,9 @@ impl<'hir> FunctionCompiler<'hir> {
             self.active_locals.push(variable);
         }
 
-        self.emitter.jump(span, call_label)?;
+        self.emit_jump(span, call_label)?;
+
+        self.registers.mark_initialized_range(visible);
         self.emitter.bind(body_label);
 
         let body_falls_through = self.emit_block_stmts(body)?;
@@ -1286,15 +1386,19 @@ impl<'hir> FunctionCompiler<'hir> {
         self.leave_scope(body_span, body_falls_through)?;
 
         self.emitter.bind(call_label);
-        self.emitter.emit(
+        self.emit_instruction(
             span,
             Instruction::TForCall {
                 base: control_base.to_bytecode(span)?,
                 variables: variable_count,
             },
         )?;
-        self.emitter.tfor_loop(span, control_base, body_label)?;
-        self.emitter.emit(
+
+        self.registers.mark_initialized_range(visible);
+        self.emit_tfor_loop(span, control_base, body_label)?;
+        self.registers.forget_range(visible);
+
+        self.emit_instruction(
             span,
             Instruction::CloseFrom {
                 base: closer.to_bytecode(span)?,
@@ -1323,6 +1427,8 @@ impl<'hir> FunctionCompiler<'hir> {
         let range = self
             .registers
             .reserve_pinned(count.into(), self.function.span)?;
+
+        self.registers.mark_initialized_range(range);
 
         for (local, register) in self.function.parameters.iter().copied().zip(range.iter()) {
             let slot = &mut self.locals[local.0 as usize];
@@ -1471,7 +1577,7 @@ impl<'hir> FunctionCompiler<'hir> {
         if values.is_empty() {
             let close_from = self.return_close_from(exit, span)?;
 
-            self.emitter.emit(
+            self.emit_instruction(
                 span,
                 Instruction::Return {
                     base: Register(0),
@@ -1506,7 +1612,7 @@ impl<'hir> FunctionCompiler<'hir> {
         let value_count = self.emit_expr_list(values, span, ListKind::Results)?;
         let close_from = self.return_close_from(exit, span)?;
 
-        self.emitter.emit(
+        self.emit_instruction(
             span,
             Instruction::Return {
                 base: mark.to_bytecode(span)?,
@@ -1576,7 +1682,7 @@ impl<'hir> FunctionCompiler<'hir> {
         assert!(start <= end);
 
         for offset in start..end {
-            self.emitter.emit(
+            self.emit_instruction(
                 span,
                 Instruction::LoadNil {
                     dst: base.offset(u16::from(offset)).to_bytecode(span)?,
@@ -1687,7 +1793,7 @@ impl<'hir> FunctionCompiler<'hir> {
                     .register
                     .expect("active to-be-closed local has no register");
 
-                let pc = self.emitter.emit(
+                let pc = self.emit_instruction(
                     hir_local.span,
                     Instruction::MarkToClose {
                         register: register.to_bytecode(hir_local.span)?,
@@ -1793,7 +1899,7 @@ impl<'hir> FunctionCompiler<'hir> {
         for (target, src) in prepared.iter().copied().zip(results.iter()).rev() {
             match target {
                 PreparedAssignmentTarget::Local { span, register } => {
-                    self.emitter.emit(
+                    self.emit_instruction(
                         span,
                         Instruction::Move {
                             dst: register.to_bytecode(span)?,
@@ -1802,7 +1908,7 @@ impl<'hir> FunctionCompiler<'hir> {
                     )?;
                 }
                 PreparedAssignmentTarget::Upvalue { span, upvalue } => {
-                    self.emitter.emit(
+                    self.emit_instruction(
                         span,
                         Instruction::SetUpvalue {
                             upvalue,
@@ -1811,7 +1917,7 @@ impl<'hir> FunctionCompiler<'hir> {
                     )?;
                 }
                 PreparedAssignmentTarget::Index { span, table, key } => {
-                    self.emitter.emit(
+                    self.emit_instruction(
                         span,
                         Instruction::SetTable {
                             table: table.to_bytecode(span)?,
@@ -1845,7 +1951,7 @@ impl<'hir> FunctionCompiler<'hir> {
     ) -> Result<(), CompileError> {
         match expr {
             SingleExpr::Nil => {
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::LoadNil {
                         dst: dst.to_bytecode(span)?,
@@ -1853,7 +1959,7 @@ impl<'hir> FunctionCompiler<'hir> {
                 )?;
             }
             SingleExpr::Bool(value) => {
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::LoadBool {
                         dst: dst.to_bytecode(span)?,
@@ -1863,7 +1969,7 @@ impl<'hir> FunctionCompiler<'hir> {
             }
             SingleExpr::Integer(value) => {
                 if let Ok(value) = i16::try_from(value) {
-                    self.emitter.emit(
+                    self.emit_instruction(
                         span,
                         Instruction::LoadSmallInt {
                             dst: dst.to_bytecode(span)?,
@@ -1873,7 +1979,7 @@ impl<'hir> FunctionCompiler<'hir> {
                 } else {
                     let constant = self.constants.intern(ConstantKey::Integer(value), span)?;
 
-                    self.emitter.emit(
+                    self.emit_instruction(
                         span,
                         Instruction::LoadConst {
                             dst: dst.to_bytecode(span)?,
@@ -1885,7 +1991,7 @@ impl<'hir> FunctionCompiler<'hir> {
             SingleExpr::FloatBits(bits) => {
                 let constant = self.constants.intern(ConstantKey::FloatBits(bits), span)?;
 
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::LoadConst {
                         dst: dst.to_bytecode(span)?,
@@ -1896,7 +2002,7 @@ impl<'hir> FunctionCompiler<'hir> {
             SingleExpr::String(string) => {
                 let constant = self.constants.intern(ConstantKey::String(string), span)?;
 
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::LoadConst {
                         dst: dst.to_bytecode(span)?,
@@ -1919,7 +2025,7 @@ impl<'hir> FunctionCompiler<'hir> {
                             .expect("active local has no assigned register")
                     };
 
-                    self.emitter.emit(
+                    self.emit_instruction(
                         span,
                         Instruction::Move {
                             dst: dst.to_bytecode(span)?,
@@ -1930,7 +2036,7 @@ impl<'hir> FunctionCompiler<'hir> {
                 Binding::Upvalue(upvalue) => {
                     let upvalue = self.upvalue_indices[upvalue.0 as usize];
 
-                    self.emitter.emit(
+                    self.emit_instruction(
                         span,
                         Instruction::GetUpvalue {
                             dst: dst.to_bytecode(span)?,
@@ -1945,7 +2051,7 @@ impl<'hir> FunctionCompiler<'hir> {
 
                 self.emit_one(operand, operand_register)?;
 
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::Unary {
                         op: bytecode_unary(operator),
@@ -1965,7 +2071,8 @@ impl<'hir> FunctionCompiler<'hir> {
                     self.emit_one(left, dst)?;
                     let end = self.emitter.new_label();
 
-                    self.emitter.jump_if_falsy(span, dst, end)?;
+                    self.emit_jump_if_falsy(span, dst, end)?;
+                    self.registers.forget_range(RegRange { base: dst, len: 1 });
                     self.emit_one(right, dst)?;
 
                     self.emitter.bind(end);
@@ -1975,10 +2082,11 @@ impl<'hir> FunctionCompiler<'hir> {
                     let end = self.emitter.new_label();
                     let right_label = self.emitter.new_label();
 
-                    self.emitter.jump_if_falsy(span, dst, right_label)?;
-                    self.emitter.jump(span, end)?;
+                    self.emit_jump_if_falsy(span, dst, right_label)?;
+                    self.emit_jump(span, end)?;
 
                     self.emitter.bind(right_label);
+                    self.registers.forget_range(RegRange { base: dst, len: 1 });
                     self.emit_one(right, dst)?;
 
                     self.emitter.bind(end);
@@ -1986,7 +2094,7 @@ impl<'hir> FunctionCompiler<'hir> {
                 BinaryOperator::NotEqual => {
                     self.emit_binary_instruction(span, dst, left, right, BytecodeBinaryOp::Equal)?;
 
-                    self.emitter.emit(
+                    self.emit_instruction(
                         span,
                         Instruction::Unary {
                             op: BytecodeUnaryOp::Not,
@@ -2013,7 +2121,7 @@ impl<'hir> FunctionCompiler<'hir> {
                 self.emit_one(table, table_register)?;
                 self.emit_one(key, key_register)?;
 
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::GetTable {
                         dst: dst.to_bytecode(span)?,
@@ -2026,7 +2134,7 @@ impl<'hir> FunctionCompiler<'hir> {
             }
             SingleExpr::Closure(child) => {
                 let child = self.compile_child(child, span)?;
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::Closure {
                         dst: dst.to_bytecode(span)?,
@@ -2063,7 +2171,7 @@ impl<'hir> FunctionCompiler<'hir> {
             let register = self.registers.reserve_temporaries(1, span)?.base;
 
             self.emit_one(register_source, register)?;
-            self.emitter.emit(
+            self.emit_instruction(
                 span,
                 Instruction::BinarySmallInt {
                     op,
@@ -2084,7 +2192,7 @@ impl<'hir> FunctionCompiler<'hir> {
         self.emit_one(source_left, left_register)?;
         self.emit_one(source_right, right_register)?;
 
-        self.emitter.emit(
+        self.emit_instruction(
             span,
             Instruction::Binary {
                 op,
@@ -2132,7 +2240,7 @@ impl<'hir> FunctionCompiler<'hir> {
         let hash_hint = total_field_count - array_hint;
         let table = dst.to_bytecode(span)?;
 
-        self.emitter.emit(
+        self.emit_instruction(
             span,
             Instruction::NewTable {
                 dst: table,
@@ -2167,7 +2275,7 @@ impl<'hir> FunctionCompiler<'hir> {
                         Count::Fixed(1)
                     };
 
-                    self.emitter.emit(
+                    self.emit_instruction(
                         field_span,
                         Instruction::SetList {
                             table,
@@ -2192,7 +2300,7 @@ impl<'hir> FunctionCompiler<'hir> {
                         .constants
                         .intern(ConstantKey::String(name), field_span)?;
 
-                    self.emitter.emit(
+                    self.emit_instruction(
                         field_span,
                         Instruction::LoadConst {
                             dst: key_register.to_bytecode(field_span)?,
@@ -2202,7 +2310,7 @@ impl<'hir> FunctionCompiler<'hir> {
 
                     self.emit_one(value, value_register)?;
 
-                    self.emitter.emit(
+                    self.emit_instruction(
                         field_span,
                         Instruction::SetTable {
                             table,
@@ -2225,7 +2333,7 @@ impl<'hir> FunctionCompiler<'hir> {
                     self.emit_one(key, key_register)?;
                     self.emit_one(value, value_register)?;
 
-                    self.emitter.emit(
+                    self.emit_instruction(
                         field_span,
                         Instruction::SetTable {
                             table,
@@ -2382,7 +2490,7 @@ impl<'hir> FunctionCompiler<'hir> {
                     "single-result destination must already be reserved"
                 );
 
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::Vararg {
                         base: destination.to_bytecode(span)?,
@@ -2397,7 +2505,7 @@ impl<'hir> FunctionCompiler<'hir> {
 
                 self.registers.reserve_temporaries(u16::from(count), span)?;
 
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::Vararg {
                         base: destination.to_bytecode(span)?,
@@ -2411,7 +2519,7 @@ impl<'hir> FunctionCompiler<'hir> {
                 let mark = self.registers.temporary_mark();
                 let output = self.registers.reserve_temporaries(1, span)?.base;
 
-                self.emitter.emit(
+                self.emit_instruction(
                     span,
                     Instruction::Vararg {
                         base: output.to_bytecode(span)?,
@@ -2494,7 +2602,7 @@ impl<'hir> FunctionCompiler<'hir> {
 
         let method_constant = self.constants.intern(ConstantKey::String(method), span)?;
 
-        self.emitter.emit(
+        self.emit_instruction(
             span,
             Instruction::LoadConst {
                 dst: key_register.to_bytecode(span)?,
@@ -2502,7 +2610,7 @@ impl<'hir> FunctionCompiler<'hir> {
             },
         )?;
 
-        self.emitter.emit(
+        self.emit_instruction(
             span,
             Instruction::GetTable {
                 dst: base.to_bytecode(span)?,
@@ -2567,8 +2675,7 @@ impl<'hir> FunctionCompiler<'hir> {
         };
 
         if let ResultContext::Fixed(count) = context {
-            let count = count.get();
-            let required_end = u32::from(base.get()) + u32::from(count);
+            let required_end = u32::from(base.get()) + u32::from(count.get());
             let current_top = u32::from(self.registers.top().get());
 
             if required_end > current_top {
@@ -2579,7 +2686,7 @@ impl<'hir> FunctionCompiler<'hir> {
             }
         }
 
-        self.emitter.emit(
+        self.emit_instruction(
             span,
             Instruction::Call {
                 base: base.to_bytecode(span)?,
@@ -2588,21 +2695,34 @@ impl<'hir> FunctionCompiler<'hir> {
             },
         )?;
 
-        if let ResultContext::One(dst) = context {
-            self.emitter.emit(
-                span,
-                Instruction::Move {
-                    dst: dst.to_bytecode(span)?,
-                    src: base.to_bytecode(span)?,
-                },
-            )?;
-        }
-
         self.registers.release_temporaries_to(base);
 
-        if let ResultContext::Fixed(count) = context {
-            let count = count.get();
-            self.registers.reserve_temporaries(u16::from(count), span)?;
+        match context {
+            ResultContext::Discard | ResultContext::Open => {}
+            ResultContext::One(dst) => {
+                let result = self.registers.reserve_temporaries(1, span)?;
+                assert_eq!(result.base, base);
+
+                self.registers.mark_initialized_range(result);
+
+                self.emit_instruction(
+                    span,
+                    Instruction::Move {
+                        dst: dst.to_bytecode(span)?,
+                        src: base.to_bytecode(span)?,
+                    },
+                )?;
+
+                self.registers.release_temporaries_to(base);
+            }
+            ResultContext::Fixed(count) => {
+                let result = self
+                    .registers
+                    .reserve_temporaries(u16::from(count.get()), span)?;
+
+                assert_eq!(result.base, base);
+                self.registers.mark_initialized_range(result);
+            }
         }
 
         Ok(results)
@@ -2640,7 +2760,7 @@ impl<'hir> FunctionCompiler<'hir> {
     ) -> Result<(), CompileError> {
         let close_from = self.return_close_from(exit, span)?;
 
-        self.emitter.emit(
+        self.emit_instruction(
             span,
             Instruction::TailCall {
                 base: prepared.base.to_bytecode(span)?,
@@ -2756,7 +2876,7 @@ fn compile_function(
     };
 
     if falls_through {
-        compiler.emitter.emit(
+        compiler.emit_instruction(
             function.span,
             Instruction::Return {
                 base: Register(0),
@@ -2769,8 +2889,9 @@ fn compile_function(
     compiler.leave_scope(function.span, false)?;
 
     let max_registers = compiler.registers.max_registers().max(1);
+    let terminal_roots = compiler.registers.root_map();
     let constants = compiler.constants.finish();
-    let emitted = compiler.emitter.finish()?;
+    let emitted = compiler.emitter.finish(terminal_roots)?;
 
     Ok(Prototype {
         name: function
@@ -2787,6 +2908,7 @@ fn compile_function(
         code: emitted.instructions,
         source_map: emitted.source_map,
         close_debug: compiler.close_debug.into_boxed_slice(),
+        register_root_maps: emitted.register_root_maps,
     })
 }
 
@@ -2866,6 +2988,63 @@ mod tests {
 
     fn compile_source(source: &str) -> Chunk {
         compile_source_result(source).unwrap()
+    }
+
+    fn branch_target(pc: usize, offset: i32) -> usize {
+        usize::try_from(i64::try_from(pc).unwrap() + 1 + i64::from(offset))
+            .expect("branch target is a valid instruction index")
+    }
+
+    fn rooted_registers(prototype: &Prototype, pc: usize) -> Vec<u8> {
+        prototype.register_root_maps[pc]
+            .registers()
+            .map(|register| register.0)
+            .collect()
+    }
+
+    fn assert_rooted(prototype: &Prototype, pc: usize, registers: &[u8]) {
+        for &register in registers {
+            assert!(
+                prototype.register_root_maps[pc].contains(Register(register)),
+                "expected R{register} to be rooted before pc {pc}; roots: {:?}",
+                rooted_registers(prototype, pc)
+            );
+        }
+    }
+
+    fn assert_unrooted(prototype: &Prototype, pc: usize, registers: &[u8]) {
+        for &register in registers {
+            assert!(
+                !prototype.register_root_maps[pc].contains(Register(register)),
+                "expected R{register} to be unrooted before pc {pc}; roots: {:?}",
+                rooted_registers(prototype, pc)
+            );
+        }
+    }
+
+    fn assert_root_map_layout(prototype: &Prototype) {
+        assert_eq!(
+            prototype.register_root_maps.len(),
+            prototype.code.len() + 1,
+            "prototype {:?} has one pre-instruction map per instruction plus a terminal map",
+            prototype.name
+        );
+        assert!(
+            prototype
+                .register_root_maps
+                .last()
+                .unwrap()
+                .registers()
+                .next()
+                .is_none(),
+            "prototype {:?} has non-empty terminal roots: {:?}",
+            prototype.name,
+            rooted_registers(prototype, prototype.code.len())
+        );
+
+        for child in &prototype.children {
+            assert_root_map_layout(child);
+        }
     }
 
     fn assert_unary_operator(source: &str, expected: BytecodeUnaryOp) {
@@ -3201,6 +3380,279 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn every_nested_prototype_has_a_terminal_root_map() {
+        let chunk = compile_source(
+            "local function outer(parameter)\n\
+                 local captured = {}\n\
+                 return function() return parameter, captured end\n\
+             end\n\
+             return outer",
+        );
+
+        assert_eq!(chunk.entry.children.len(), 1);
+        assert_eq!(chunk.entry.children[0].children.len(), 1);
+        assert_root_map_layout(&chunk.entry);
+    }
+
+    #[test]
+    fn leaving_a_scope_unroots_its_register_without_unrooting_outer_locals() {
+        let chunk = compile_source(
+            "local outer = {}\n\
+             do\n\
+                 local dead = {}\n\
+             end\n\
+             return",
+        );
+        let table_registers = chunk
+            .entry
+            .code
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::NewTable { dst, .. } => Some(*dst),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [outer, dead] = table_registers.as_slice() else {
+            panic!(
+                "expected two local table allocations, got {:#?}",
+                chunk.entry.code
+            );
+        };
+        let return_pc = chunk
+            .entry
+            .code
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::Return { .. }))
+            .unwrap();
+
+        assert_ne!(outer, dead);
+        assert_rooted(&chunk.entry, return_pc, &[outer.0]);
+        assert_unrooted(&chunk.entry, return_pc, &[dead.0]);
+    }
+
+    #[test]
+    fn fixed_call_results_replace_the_callee_and_argument_root_window() {
+        let chunk = compile_source(
+            "local first, second = f({}, {})\n\
+             return",
+        );
+        let (call_pc, base) = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .find_map(|(pc, instruction)| match instruction {
+                Instruction::Call {
+                    base,
+                    results: Count::Fixed(2),
+                    ..
+                } => Some((pc, *base)),
+                _ => None,
+            })
+            .expect("fixed two-result call");
+        let second_result = base.0.checked_add(1).unwrap();
+        let released_argument = base.0.checked_add(2).unwrap();
+
+        assert_rooted(&chunk.entry, call_pc + 1, &[base.0, second_result]);
+        assert_unrooted(&chunk.entry, call_pc + 1, &[released_argument]);
+    }
+
+    #[test]
+    fn numeric_for_root_maps_describe_each_control_flow_edge() {
+        let chunk = compile_source("for i = 1, 2 do local seen = i end\nreturn 3");
+        let (prep_pc, base, exit_offset) = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .find_map(|(pc, instruction)| match instruction {
+                Instruction::ForPrep { base, exit_offset } => Some((pc, *base, *exit_offset)),
+                _ => None,
+            })
+            .expect("numeric-for preparation");
+        let (loop_pc, body_offset) = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .find_map(|(pc, instruction)| match instruction {
+                Instruction::ForLoop { body_offset, .. } => Some((pc, *body_offset)),
+                _ => None,
+            })
+            .expect("numeric-for backedge");
+        let controls = [base.0, base.0 + 1, base.0 + 2];
+        let visible = base.0 + 3;
+        let body_pc = branch_target(loop_pc, body_offset);
+        let exit_pc = branch_target(prep_pc, exit_offset);
+
+        assert_eq!(body_pc, prep_pc + 1);
+        assert_eq!(exit_pc, loop_pc + 1);
+
+        assert_rooted(&chunk.entry, prep_pc, &controls);
+        assert_unrooted(&chunk.entry, prep_pc, &[visible]);
+
+        assert_rooted(&chunk.entry, body_pc, &controls);
+        assert_rooted(&chunk.entry, body_pc, &[visible]);
+
+        assert_rooted(&chunk.entry, loop_pc, &controls);
+        assert_unrooted(&chunk.entry, loop_pc, &[visible]);
+
+        assert_unrooted(&chunk.entry, exit_pc, &controls);
+        assert_unrooted(&chunk.entry, exit_pc, &[visible]);
+    }
+
+    #[test]
+    fn generic_for_root_maps_describe_call_body_and_exit_edges() {
+        let chunk = compile_source(
+            "for key, value in nil do local seen = key end\n\
+             return 1",
+        );
+        let (call_pc, base, variable_count) = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .find_map(|(pc, instruction)| match instruction {
+                Instruction::TForCall { base, variables } => Some((pc, *base, *variables)),
+                _ => None,
+            })
+            .expect("generic-for call");
+        let (loop_pc, body_offset) = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .find_map(|(pc, instruction)| match instruction {
+                Instruction::TForLoop { body_offset, .. } => Some((pc, *body_offset)),
+                _ => None,
+            })
+            .expect("generic-for backedge");
+
+        assert_eq!(variable_count, 2);
+
+        let controls = [base.0, base.0 + 1, base.0 + 2, base.0 + 3];
+        let variables = [base.0 + 4, base.0 + 5];
+        let body_pc = branch_target(loop_pc, body_offset);
+        let close_pc = loop_pc + 1;
+        let after_close_pc = close_pc + 1;
+
+        assert!(matches!(
+            chunk.entry.code.get(close_pc),
+            Some(Instruction::CloseFrom { .. })
+        ));
+
+        assert_rooted(&chunk.entry, call_pc, &controls);
+        assert_unrooted(&chunk.entry, call_pc, &variables);
+
+        assert_rooted(&chunk.entry, loop_pc, &controls);
+        assert_rooted(&chunk.entry, loop_pc, &variables);
+
+        assert_rooted(&chunk.entry, body_pc, &controls);
+        assert_rooted(&chunk.entry, body_pc, &variables);
+
+        assert_rooted(&chunk.entry, close_pc, &controls);
+        assert_unrooted(&chunk.entry, close_pc, &variables);
+
+        assert_unrooted(&chunk.entry, after_close_pc, &controls);
+        assert_unrooted(&chunk.entry, after_close_pc, &variables);
+    }
+
+    #[test]
+    fn short_circuit_and_unroots_the_destination_only_on_the_rhs_path() {
+        let chunk = compile_source("return {} and {}");
+        let table_pcs = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| match instruction {
+                Instruction::NewTable { dst, .. } => Some((pc, *dst)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [(left_pc, destination), (right_pc, right_destination)] = table_pcs.as_slice() else {
+            panic!("expected two table operands, got {:#?}", chunk.entry.code);
+        };
+        let (condition_pc, condition, target) = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .find_map(|(pc, instruction)| match instruction {
+                Instruction::JumpIfFalsy { condition, offset } => {
+                    Some((pc, *condition, branch_target(pc, *offset)))
+                }
+                _ => None,
+            })
+            .expect("short-circuit branch");
+
+        assert_eq!(destination, right_destination);
+        assert_eq!(destination, &condition);
+        assert_eq!(*left_pc + 1, condition_pc);
+        assert!(matches!(
+            chunk.entry.code.get(target),
+            Some(Instruction::Return { .. })
+        ));
+
+        assert_rooted(&chunk.entry, condition_pc, &[destination.0]);
+        assert_unrooted(&chunk.entry, *right_pc, &[destination.0]);
+        assert_rooted(&chunk.entry, target, &[destination.0]);
+    }
+
+    #[test]
+    fn short_circuit_or_unroots_the_destination_only_on_the_rhs_path() {
+        let chunk = compile_source("return {} or {}");
+        let table_pcs = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, instruction)| match instruction {
+                Instruction::NewTable { dst, .. } => Some((pc, *dst)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [(left_pc, destination), (right_pc, right_destination)] = table_pcs.as_slice() else {
+            panic!("expected two table operands, got {:#?}", chunk.entry.code);
+        };
+        let (condition_pc, condition, rhs_target) = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .find_map(|(pc, instruction)| match instruction {
+                Instruction::JumpIfFalsy { condition, offset } => {
+                    Some((pc, *condition, branch_target(pc, *offset)))
+                }
+                _ => None,
+            })
+            .expect("short-circuit condition branch");
+        let end_target = chunk
+            .entry
+            .code
+            .iter()
+            .enumerate()
+            .find_map(|(pc, instruction)| match instruction {
+                Instruction::Jump { offset } => Some(branch_target(pc, *offset)),
+                _ => None,
+            })
+            .expect("short-circuit end branch");
+
+        assert_eq!(destination, right_destination);
+        assert_eq!(destination, &condition);
+        assert_eq!(*left_pc + 1, condition_pc);
+        assert_eq!(rhs_target, *right_pc);
+        assert!(matches!(
+            chunk.entry.code.get(end_target),
+            Some(Instruction::Return { .. })
+        ));
+
+        assert_rooted(&chunk.entry, condition_pc, &[destination.0]);
+        assert_unrooted(&chunk.entry, rhs_target, &[destination.0]);
+        assert_rooted(&chunk.entry, end_target, &[destination.0]);
     }
 
     #[test]

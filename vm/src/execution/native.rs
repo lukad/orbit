@@ -26,6 +26,8 @@ pub(super) enum NativeStep {
 
 impl Execution<'_> {
     pub(super) fn invoke_native_top(&mut self) -> Result<NativeStep, VmError> {
+        let roots = self.root_snapshot()?;
+
         let activation = self.stack.pop().expect("native activation is active");
 
         let Activation::Native(mut activation) = activation else {
@@ -46,11 +48,9 @@ impl Execution<'_> {
         let callback_result = {
             let event = event.as_data();
 
-            let roots = self.root_snapshot()?;
-
             let mut services = ExecutionNativeServices {
                 runtime: &mut *self.runtime,
-                roots,
+                roots: roots.into_vec(),
             };
 
             let mut context = NativeContext::new(
@@ -294,12 +294,34 @@ impl Execution<'_> {
 
 struct ExecutionNativeServices<'runtime> {
     runtime: &'runtime mut crate::runtime::Runtime,
-    roots: Box<[ObjectId]>,
+    roots: Vec<ObjectId>,
+}
+
+impl ExecutionNativeServices<'_> {
+    fn keep_alive(&mut self, value: RawValue) -> VmResult<RawValue> {
+        let Some(root) = value.object_id() else {
+            return Ok(value);
+        };
+
+        if self.roots.contains(&root) {
+            return Ok(value);
+        }
+
+        let requested = self.roots.len().saturating_add(1);
+
+        self.roots
+            .try_reserve(1)
+            .map_err(|_| VmError::from(VmErrorKind::RootCapacityExceeded { requested }))?;
+
+        self.roots.push(root);
+        Ok(value)
+    }
 }
 
 impl NativeServices for ExecutionNativeServices<'_> {
     fn import_value(&mut self, value: Value) -> VmResult<RawValue> {
-        self.runtime.import_value(value).map_err(VmError::from)
+        let value = self.runtime.import_value(value)?;
+        self.keep_alive(value)
     }
 
     fn export_value(&mut self, value: &RawValue) -> VmResult<Value> {
@@ -307,10 +329,12 @@ impl NativeServices for ExecutionNativeServices<'_> {
     }
 
     fn create_table(&mut self, array_hint: usize, hash_hint: usize) -> VmResult<RawValue> {
-        self.runtime
+        let value = self
+            .runtime
             .allocate_table(array_hint, hash_hint)
-            .map(RawValue::Table)
-            .map_err(VmError::from)
+            .map(RawValue::Table)?;
+
+        self.keep_alive(value)
     }
 
     fn raw_get(&mut self, table: &RawValue, key: &RawValue) -> VmResult<RawValue> {
@@ -320,7 +344,8 @@ impl NativeServices for ExecutionNativeServices<'_> {
             })
         })?;
 
-        self.runtime.raw_get(table, key).map_err(VmError::from)
+        let value = self.runtime.raw_get(table, key)?;
+        self.keep_alive(value)
     }
 
     fn raw_set(&mut self, table: &RawValue, key: RawValue, value: RawValue) -> VmResult<()> {
@@ -346,10 +371,12 @@ impl NativeServices for ExecutionNativeServices<'_> {
     }
 
     fn get_metatable(&mut self, value: &RawValue) -> VmResult<Option<RawValue>> {
-        self.runtime
-            .metatable(value)
-            .map(|metatable| metatable.map(RawValue::Table))
-            .map_err(VmError::from)
+        let metatable = self.runtime.metatable(value)?.map(RawValue::Table);
+
+        match metatable {
+            Some(value) => self.keep_alive(value).map(Some),
+            None => Ok(None),
+        }
     }
 
     fn set_metatable(&mut self, value: &RawValue, metatable: Option<&RawValue>) -> VmResult<()> {
@@ -380,7 +407,16 @@ impl NativeServices for ExecutionNativeServices<'_> {
             })
         })?;
 
-        self.runtime.next(table, previous).map_err(VmError::from)
+        let entry = self.runtime.next(table, previous)?;
+
+        match entry {
+            Some((key, value)) => {
+                let key = self.keep_alive(key)?;
+                let value = self.keep_alive(value)?;
+                Ok(Some((key, value)))
+            }
+            None => Ok(None),
+        }
     }
 
     fn load_source(
@@ -388,10 +424,12 @@ impl NativeServices for ExecutionNativeServices<'_> {
         source: LoadSource<'_>,
         environment: Option<RawValue>,
     ) -> VmResult<RawValue> {
-        self.runtime
+        let value = self
+            .runtime
             .load_source_raw(source, environment)
-            .map(RawValue::Function)
-            .map_err(VmError::from)
+            .map(RawValue::Function)?;
+
+        self.keep_alive(value)
     }
 
     fn file_exists(&self, filename: &[u8]) -> bool {
@@ -440,11 +478,13 @@ impl NativeServices for ExecutionNativeServices<'_> {
             ArithmeticOp::Power => BinaryOp::Power,
         };
 
-        semantics::binary(operation, left, right).map_err(VmError::from)
+        let value = semantics::binary(operation, left, right).map_err(VmError::from)?;
+        self.keep_alive(value)
     }
 
     fn raw_negate(&mut self, operand: &RawValue) -> VmResult<RawValue> {
-        semantics::unary(UnaryOp::Negate, operand).map_err(VmError::from)
+        let value = semantics::unary(UnaryOp::Negate, operand).map_err(VmError::from)?;
+        self.keep_alive(value)
     }
 
     fn function_upvalue_id(
@@ -456,9 +496,15 @@ impl NativeServices for ExecutionNativeServices<'_> {
             return Ok(None);
         };
 
-        self.runtime
+        let identity = self
+            .runtime
             .function_upvalue_id(*function, index)
             .map(|identity| identity.map(RawValue::LightUserdata))
-            .map_err(VmError::from)
+            .map_err(VmError::from)?;
+
+        match identity {
+            Some(value) => self.keep_alive(value).map(Some),
+            None => Ok(None),
+        }
     }
 }

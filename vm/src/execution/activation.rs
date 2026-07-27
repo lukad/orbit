@@ -477,6 +477,8 @@ impl NativeActivation {
     }
 
     pub(crate) fn visit_roots(&self, mut visit: impl FnMut(ObjectId)) {
+        visit(self.invocation.function().object());
+
         for value in self.arguments.iter().chain(self.invocation.captures()) {
             if let Some(object) = value.object_id() {
                 visit(object);

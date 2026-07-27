@@ -40,4 +40,8 @@ impl Runtime {
 
         Ok(reclaimed)
     }
+
+    pub(crate) fn record_gc_allocation(&mut self, units: usize) {
+        self.heap.record_allocation_debt(units);
+    }
 }

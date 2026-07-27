@@ -47,6 +47,7 @@ impl FunctionData {
                 upvalues: function.upvalues.clone(),
             }),
             Self::Native(function) => FunctionSnapshot::Native(NativeInvocation {
+                function: function_id,
                 name: function.name.clone(),
                 callback: function.callback,
                 captures: function.captures.clone(),
@@ -138,6 +139,7 @@ pub(crate) struct NativeInvocation {
     name: Box<str>,
     callback: NativeCallback,
     captures: Box<[RawValue]>,
+    function: FunctionId,
 }
 
 impl NativeInvocation {
@@ -151,5 +153,9 @@ impl NativeInvocation {
 
     pub(crate) fn captures(&self) -> &[RawValue] {
         &self.captures
+    }
+
+    pub(crate) fn function(&self) -> FunctionId {
+        self.function
     }
 }

@@ -1,6 +1,6 @@
 use orbit_common::{SourceId, Span};
 use orbit_compiler::bytecode::{
-    BinaryOp, Chunk, ImmediateOperandSide, Instruction, Register, SourceMapEntry,
+    BinaryOp, Chunk, ImmediateOperandSide, Instruction, Register, RegisterRootMap, SourceMapEntry,
 };
 use orbit_parser::{lexer::lex, parser::parse_chunk};
 
@@ -1310,6 +1310,7 @@ fn empty_code_reports_a_source_map_free_trace_frame() {
     let mut chunk = compile_source(source_id, "return");
 
     chunk.entry.code = Box::new([]);
+    chunk.entry.register_root_maps = vec![RegisterRootMap::EMPTY].into_boxed_slice();
     chunk.entry.source_map = vec![SourceMapEntry { pc: 0, span }].into_boxed_slice();
 
     let mut state = State::new(NoLoadService).unwrap();
@@ -1473,6 +1474,69 @@ fn suspended_calls_keep_execution_roots_during_collection() {
     };
 
     assert_eq!(values, vec![Value::Integer(42)]);
+}
+
+#[test]
+fn suspended_lua_activation_roots_its_function_identity() {
+    let mut state = State::new(NoLoadService).unwrap();
+
+    let weak = state.create_table(0, 1).unwrap();
+    let metatable = state.create_table(0, 1).unwrap();
+
+    state
+        .raw_set(&metatable, &string_value("__mode"), &string_value("v"))
+        .unwrap();
+
+    state
+        .set_metatable(&Value::Table(weak.clone()), Some(&metatable))
+        .unwrap();
+
+    state
+        .set_global(b"weak", &Value::Table(weak.clone()))
+        .unwrap();
+
+    let yield_function = state
+        .create_native_function("yield once", yield_once, &[])
+        .unwrap();
+
+    state
+        .set_global(b"yield_once", &Value::Function(yield_function))
+        .unwrap();
+
+    let function = state
+        .load_chunk(compile_source(
+            SourceId::new(0),
+            r#"
+                local active
+
+                active = function()
+                    active = nil
+                    yield_once()
+                    return weak[1] ~= nil
+                end
+
+                weak[1] = active
+                return active()
+            "#,
+        ))
+        .unwrap();
+
+    let CallOutcome::Yielded {
+        values,
+        mut suspension,
+    } = state.call(&function, &[]).unwrap()
+    else {
+        panic!("active Lua function should yield");
+    };
+
+    assert_eq!(values, vec![Value::Integer(1)]);
+    suspension.collect_garbage().unwrap();
+
+    let CallOutcome::Returned(values) = suspension.resume(&[Value::Integer(0)]).unwrap() else {
+        panic!("resumed Lua function unexpectedly yielded again");
+    };
+
+    assert_eq!(values, vec![Value::Boolean(true)]);
 }
 
 #[test]

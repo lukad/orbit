@@ -57,6 +57,7 @@ pub struct Prototype {
     pub upvalues: Box<[UpvalueDescriptor]>,
     pub children: Box<[Prototype]>,
     pub code: Box<[Instruction]>,
+    pub register_root_maps: Box<[RegisterRootMap]>,
 
     pub source_map: Box<[SourceMapEntry]>,
     pub close_debug: Box<[CloseDebugInfo]>,
@@ -91,6 +92,50 @@ pub struct SourceMapEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Register(pub u8);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RegisterRootMap {
+    words: [u64; 4],
+}
+
+impl RegisterRootMap {
+    pub const EMPTY: Self = Self { words: [0; 4] };
+
+    pub const fn contains(self, register: Register) -> bool {
+        let index = register.0 as usize;
+        (self.words[index / 64] & (1_u64 << (index % 64))) != 0
+    }
+
+    pub fn insert(&mut self, register: Register) {
+        let index = register.0 as usize;
+        self.words[index / 64] |= 1_u64 << (index % 64);
+    }
+
+    pub fn registers(self) -> impl Iterator<Item = Register> {
+        (u8::MIN..=u8::MAX)
+            .map(Register)
+            .filter(move |register| self.contains(*register))
+    }
+
+    pub(crate) fn insert_range(&mut self, start: u16, end: u16) {
+        assert!(start <= end);
+        assert!(end <= 256);
+
+        for raw in start..end {
+            self.insert(Register(raw as u8));
+        }
+    }
+
+    pub(crate) fn remove_range(&mut self, start: u16, end: u16) {
+        assert!(start <= end);
+        assert!(end <= 256);
+
+        for raw in start..end {
+            let index = raw as usize;
+            self.words[index / 64] &= !(1_u64 << (index % 64));
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -317,4 +362,56 @@ pub enum Instruction {
         base: Register,
         body_offset: i32,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Register, RegisterRootMap};
+
+    #[test]
+    fn register_root_map_addresses_every_word_boundary() {
+        let mut roots = RegisterRootMap::EMPTY;
+        let boundaries = [0, 63, 64, 127, 128, 191, 192, 255];
+
+        for register in boundaries {
+            roots.insert(Register(register));
+        }
+
+        assert_eq!(
+            roots
+                .registers()
+                .map(|register| register.0)
+                .collect::<Vec<_>>(),
+            boundaries
+        );
+
+        for register in [1, 62, 65, 126, 129, 190, 193, 254] {
+            assert!(!roots.contains(Register(register)));
+        }
+    }
+
+    #[test]
+    fn register_root_map_ranges_cross_word_boundaries() {
+        let mut roots = RegisterRootMap::EMPTY;
+
+        roots.insert_range(62, 194);
+
+        for register in 0..=u8::MAX {
+            assert_eq!(
+                roots.contains(Register(register)),
+                (62..194).contains(&u16::from(register)),
+                "unexpected root state for R{register}"
+            );
+        }
+
+        roots.remove_range(63, 193);
+
+        assert_eq!(
+            roots
+                .registers()
+                .map(|register| register.0)
+                .collect::<Vec<_>>(),
+            vec![62, 193]
+        );
+    }
 }

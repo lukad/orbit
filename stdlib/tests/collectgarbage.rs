@@ -59,9 +59,8 @@ fn collect_returns_zero_with_default_and_explicit_option() {
 fn count_tracks_heap_growth_and_collection() {
     let mut state = installed_state();
 
-    // The structure is built inside a function so that its frame (and its
-    // register file) is popped before collection: the GC conservatively roots
-    // every register slot of every live frame, including dead ones.
+    // Build a sizeable live graph, release its final local reference, and
+    // verify that an explicit collection reclaims it.
     let values = execute(
         &mut state,
         r#"
@@ -91,6 +90,65 @@ fn count_tracks_heap_growth_and_collection() {
             Value::Boolean(true),
         ]
     );
+}
+
+#[test]
+fn collection_drops_out_of_scope_values_but_keeps_active_locals() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local weak = setmetatable({}, { __mode = "v" })
+
+            do
+                local dead = {}
+                weak.dead = dead
+            end
+
+            local live = {}
+            weak.live = live
+
+            collectgarbage("collect")
+
+            return weak.dead == nil, weak.live == live
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(values, vec![Value::Boolean(true), Value::Boolean(true)]);
+}
+
+#[test]
+fn automatic_collection_is_not_blocked_by_stale_condition_registers() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local weak = setmetatable({}, { __mode = "v" })
+
+            do
+                local dead = {}
+                weak[1] = dead
+            end
+
+            local iterations = 0
+
+            while weak[1] ~= nil and iterations < 10000 do
+                local garbage = {}
+                garbage[garbage] = garbage
+                local text =
+                    iterations .. iterations .. iterations .. iterations
+                iterations = iterations + 1
+            end
+
+            return weak[1] == nil, iterations < 10000
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(values, vec![Value::Boolean(true), Value::Boolean(true)]);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use orbit_common::Span;
 
 use crate::{
-    bytecode::{ImmediateOperandSide, Instruction, SourceMapEntry},
+    bytecode::{ImmediateOperandSide, Instruction, RegisterRootMap, SourceMapEntry},
     error::{CompileError, CompileErrorKind},
     registers::VReg,
 };
@@ -12,6 +12,7 @@ pub(crate) struct CodeLabel(u32);
 pub(crate) struct EmittedCode {
     pub(crate) instructions: Box<[Instruction]>,
     pub(crate) source_map: Box<[SourceMapEntry]>,
+    pub(crate) register_root_maps: Box<[RegisterRootMap]>,
 }
 
 enum PatchField {
@@ -35,6 +36,7 @@ pub(crate) struct Emitter {
     source_map: Vec<SourceMapEntry>,
     labels: Vec<Option<u32>>,
     relocations: Vec<Relocation>,
+    root_maps: Vec<RegisterRootMap>,
 }
 
 impl Emitter {
@@ -44,6 +46,7 @@ impl Emitter {
             source_map: vec![],
             labels: vec![],
             relocations: vec![],
+            root_maps: vec![],
         }
     }
 
@@ -65,6 +68,7 @@ impl Emitter {
     pub(crate) fn emit(
         &mut self,
         span: Span,
+        roots: RegisterRootMap,
         instruction: Instruction,
     ) -> Result<u32, CompileError> {
         let pc = u32::try_from(self.code.len()).map_err(|_| CompileError {
@@ -80,18 +84,23 @@ impl Emitter {
             self.source_map.push(SourceMapEntry { pc, span });
         }
 
+        debug_assert_eq!(self.root_maps.len(), self.code.len());
+
+        self.root_maps.push(roots);
         self.code.push(instruction);
+
         Ok(pc)
     }
 
     fn emit_relocated(
         &mut self,
         span: Span,
+        roots: RegisterRootMap,
         instruction: Instruction,
         target: CodeLabel,
         field: PatchField,
     ) -> Result<(), CompileError> {
-        let instruction_pc = self.emit(span, instruction)?;
+        let instruction_pc = self.emit(span, roots, instruction)?;
 
         self.relocations.push(Relocation {
             instruction_pc,
@@ -103,9 +112,15 @@ impl Emitter {
         Ok(())
     }
 
-    pub(crate) fn jump(&mut self, span: Span, target: CodeLabel) -> Result<(), CompileError> {
+    pub(crate) fn jump(
+        &mut self,
+        span: Span,
+        roots: RegisterRootMap,
+        target: CodeLabel,
+    ) -> Result<(), CompileError> {
         self.emit_relocated(
             span,
+            roots,
             Instruction::Jump { offset: 0 },
             target,
             PatchField::Jump,
@@ -115,11 +130,13 @@ impl Emitter {
     pub(crate) fn jump_if_falsy(
         &mut self,
         span: Span,
+        roots: RegisterRootMap,
         condition: VReg,
         target: CodeLabel,
     ) -> Result<(), CompileError> {
         self.emit_relocated(
             span,
+            roots,
             Instruction::JumpIfFalsy {
                 condition: condition.to_bytecode(span)?,
                 offset: 0,
@@ -132,6 +149,7 @@ impl Emitter {
     pub(crate) fn jump_if_not_equal_small_int(
         &mut self,
         span: Span,
+        roots: RegisterRootMap,
         register: VReg,
         immediate: i16,
         side: ImmediateOperandSide,
@@ -139,6 +157,7 @@ impl Emitter {
     ) -> Result<(), CompileError> {
         self.emit_relocated(
             span,
+            roots,
             Instruction::JumpIfNotEqualSmallInt {
                 register: register.to_bytecode(span)?,
                 immediate,
@@ -153,11 +172,13 @@ impl Emitter {
     pub(crate) fn for_prep(
         &mut self,
         span: Span,
+        roots: RegisterRootMap,
         base: VReg,
         exit: CodeLabel,
     ) -> Result<(), CompileError> {
         self.emit_relocated(
             span,
+            roots,
             Instruction::ForPrep {
                 base: base.to_bytecode(span)?,
                 exit_offset: 0,
@@ -170,11 +191,13 @@ impl Emitter {
     pub(crate) fn for_loop(
         &mut self,
         span: Span,
+        roots: RegisterRootMap,
         base: VReg,
         body: CodeLabel,
     ) -> Result<(), CompileError> {
         self.emit_relocated(
             span,
+            roots,
             Instruction::ForLoop {
                 base: base.to_bytecode(span)?,
                 body_offset: 0,
@@ -187,11 +210,13 @@ impl Emitter {
     pub(crate) fn tfor_loop(
         &mut self,
         span: Span,
+        roots: RegisterRootMap,
         base: VReg,
         body: CodeLabel,
     ) -> Result<(), CompileError> {
         self.emit_relocated(
             span,
+            roots,
             Instruction::TForLoop {
                 base: base.to_bytecode(span)?,
                 body_offset: 0,
@@ -201,12 +226,16 @@ impl Emitter {
         )
     }
 
-    pub(crate) fn finish(self) -> Result<EmittedCode, CompileError> {
+    pub(crate) fn finish(
+        self,
+        terminal_roots: RegisterRootMap,
+    ) -> Result<EmittedCode, CompileError> {
         let Self {
             mut code,
             source_map,
             labels,
             relocations,
+            mut root_maps,
         } = self;
 
         for relocation in relocations {
@@ -256,9 +285,13 @@ impl Emitter {
             }
         }
 
+        assert_eq!(root_maps.len(), code.len());
+        root_maps.push(terminal_roots);
+
         Ok(EmittedCode {
             instructions: code.into_boxed_slice(),
             source_map: source_map.into_boxed_slice(),
+            register_root_maps: root_maps.into_boxed_slice(),
         })
     }
 }

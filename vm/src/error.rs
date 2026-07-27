@@ -160,6 +160,19 @@ pub enum VmErrorKind {
     Raised,
     #[error("to-be-closed register R{register} was marked after R{previous}")]
     InvalidToCloseOrder { previous: u8, register: u8 },
+    #[error("prototype declares {registers} registers; maximum is {maximum}")]
+    InvalidPrototypeRegisterCount { registers: u16, maximum: u16 },
+    #[error("prototype has {actual} register-root maps; expected {expected}")]
+    InvalidPrototypeRootMapCount { expected: usize, actual: usize },
+    #[error(
+        "prototype register-root map at pc {pc} contains R{register}, \
+         but only {registers} registers are declared"
+    )]
+    InvalidPrototypeRootRegister {
+        pc: usize,
+        register: u8,
+        registers: u16,
+    },
 }
 
 impl From<LoadError> for VmErrorKind {

@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use crate::{
     error::{FaultResult, VmErrorKind},
-    id::ObjectId,
     table::TableKey,
     value::RawValue,
 };
@@ -157,19 +156,27 @@ impl HashPart {
         self.live
     }
 
-    pub(super) fn visit_objects(&self, mut visit: impl FnMut(ObjectId)) {
+    pub(super) fn visit_live(&self, mut visit: impl FnMut(&TableKey, &RawValue)) {
         for slot in &self.slots {
-            let HashSlot::Live { key, value } = slot else {
-                continue;
+            if let HashSlot::Live { key, value } = slot {
+                visit(key, value);
+            }
+        }
+    }
+
+    pub(super) fn tombstone_where(
+        &mut self,
+        mut should_remove: impl FnMut(&TableKey, &RawValue) -> bool,
+    ) {
+        for slot in &mut self.slots {
+            let key = match slot {
+                HashSlot::Live { key, value } if should_remove(key, value) => key.clone(),
+                HashSlot::Live { .. } | HashSlot::Dead { .. } => continue,
             };
 
-            if let Some(object) = key.object_id() {
-                visit(object);
-            }
-
-            if let Some(object) = value.object_id() {
-                visit(object);
-            }
+            *slot = HashSlot::Dead { key };
+            self.live -= 1;
+            self.dead += 1;
         }
     }
 
