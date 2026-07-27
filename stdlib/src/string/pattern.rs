@@ -433,20 +433,8 @@ pub(crate) fn find(
     let mut s = start;
 
     loop {
-        let mut matcher = Matcher {
-            subject,
-            pattern,
-            captures: [Capture::Closed { start: 0, len: 0 }; MAX_CAPTURES],
-            level: 0,
-            depth: MAX_MATCH_DEPTH,
-        };
-
-        if let Some(end) = matcher.do_match(s, 0)? {
-            return Ok(Some(Match {
-                start: s,
-                end,
-                captures: matcher.collect()?,
-            }));
+        if let Some(matched) = match_at(subject, pattern, s)? {
+            return Ok(Some(matched));
         }
 
         if anchor || s == subject.len() {
@@ -455,4 +443,32 @@ pub(crate) fn find(
 
         s += 1;
     }
+}
+
+pub(crate) fn match_at(
+    subject: &[u8],
+    pattern: &[u8],
+    start: usize,
+) -> Result<Option<Match>, PatternError> {
+    if start > subject.len() {
+        return Ok(None);
+    }
+
+    let mut matcher = Matcher {
+        subject,
+        pattern,
+        captures: [Capture::Closed { start: 0, len: 0 }; MAX_CAPTURES],
+        level: 0,
+        depth: MAX_MATCH_DEPTH,
+    };
+
+    let Some(end) = matcher.do_match(start, 0)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(Match {
+        start,
+        end,
+        captures: matcher.collect()?,
+    }))
 }

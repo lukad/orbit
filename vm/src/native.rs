@@ -223,6 +223,12 @@ pub(crate) trait NativeServices {
     fn import_value(&mut self, value: Value) -> VmResult<RawValue>;
     fn export_value(&mut self, value: &RawValue) -> VmResult<Value>;
     fn create_table(&mut self, array_hint: usize, hash_hint: usize) -> VmResult<RawValue>;
+    fn create_native_function(
+        &mut self,
+        name: Box<str>,
+        callback: NativeCallback,
+        captures: Box<[RawValue]>,
+    ) -> VmResult<RawValue>;
     fn raw_get(&mut self, table: &RawValue, key: &RawValue) -> VmResult<RawValue>;
     fn raw_set(&mut self, table: &RawValue, key: RawValue, value: RawValue) -> VmResult<()>;
     fn raw_len(&self, table: &RawValue) -> VmResult<i64>;
@@ -364,6 +370,20 @@ impl<'context> NativeContext<'context> {
     ) -> VmResult<LocalValue<'context>> {
         self.services
             .create_table(array_hint, hash_hint)
+            .map(LocalValue::new)
+    }
+
+    pub fn create_native_function<I>(
+        &mut self,
+        name: impl Into<Box<str>>,
+        callback: NativeCallback,
+        captures: I,
+    ) -> VmResult<LocalValue<'context>>
+    where
+        I: IntoIterator<Item = LocalValue<'context>>,
+    {
+        self.services
+            .create_native_function(name.into(), callback, collect_values(captures))
             .map(LocalValue::new)
     }
 

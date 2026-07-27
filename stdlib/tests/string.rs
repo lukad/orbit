@@ -1407,3 +1407,321 @@ fn non_arithmetic_operators_and_invalid_strings_do_not_coerce() {
         }
     );
 }
+
+fn call_gmatch(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(gmatch) = state.raw_get(&string_library, &string("gmatch"))? else {
+        panic!("string.gmatch was not installed as a function");
+    };
+
+    match state.call(&gmatch, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.gmatch unexpectedly yielded"),
+    }
+}
+
+fn assert_gmatch_error(error: VmError, expected: &str) {
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: expected.into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.gmatch"
+    ));
+}
+
+#[test]
+fn install_registers_string_gmatch() {
+    let mut state = installed_state();
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+
+    assert!(matches!(
+        state.raw_get(&string_library, &string("gmatch")).unwrap(),
+        Value::Function(_)
+    ));
+}
+
+#[test]
+fn gmatch_iterators_return_whole_matches_and_keep_independent_state() {
+    assert_eq!(
+        execute_string_test(
+            r##"
+                local first = string.gmatch("one two", "%w+")
+                local second = string.gmatch("x y", "%w+")
+
+                local first_one = first()
+                local second_one = second()
+                local first_two = first()
+                local second_two = second()
+                local first_done = select("#", first())
+                local second_done = select("#", second())
+
+                return
+                    first ~= second,
+                    first_one, second_one,
+                    first_two, second_two,
+                    first_done, second_done
+            "##,
+        )
+        .unwrap(),
+        vec![
+            Value::Boolean(true),
+            string("one"),
+            string("x"),
+            string("two"),
+            string("y"),
+            Value::Integer(0),
+            Value::Integer(0),
+        ]
+    );
+}
+
+#[test]
+fn gmatch_works_as_a_generic_for_iterator() {
+    assert_eq!(
+        execute_string_test(
+            r#"
+                local result = ""
+                for word in string.gmatch("first second word", "%w+") do
+                    result = result .. "[" .. word .. "]"
+                end
+                return result
+            "#,
+        )
+        .unwrap(),
+        vec![string("[first][second][word]")]
+    );
+}
+
+#[test]
+fn gmatch_returns_captures_instead_of_the_whole_match() {
+    assert_eq!(
+        execute_string_test(
+            r##"
+                local iterator = string.gmatch(
+                    "from=world, to=Lua",
+                    "(%w+)=(%w+)"
+                )
+                local key_one, value_one = iterator()
+                local key_two, value_two = iterator()
+                local done = select("#", iterator())
+
+                return key_one, value_one, key_two, value_two, done
+            "##,
+        )
+        .unwrap(),
+        vec![
+            string("from"),
+            string("world"),
+            string("to"),
+            string("Lua"),
+            Value::Integer(0),
+        ]
+    );
+}
+
+#[test]
+fn gmatch_position_and_empty_matches_make_progress_without_duplicates() {
+    assert_eq!(
+        execute_string_test(
+            r##"
+                local positions = string.gmatch("abc", "()")
+                local p1, p2, p3, p4 =
+                    positions(), positions(), positions(), positions()
+                local positions_done = select("#", positions())
+
+                local stars = string.gmatch("ba", "a*")
+                local first, second = stars(), stars()
+                local stars_done = select("#", stars())
+
+                return
+                    p1, p2, p3, p4, positions_done,
+                    first, second, stars_done
+            "##,
+        )
+        .unwrap(),
+        vec![
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+            Value::Integer(4),
+            Value::Integer(0),
+            string(""),
+            string("a"),
+            Value::Integer(0),
+        ]
+    );
+}
+
+#[test]
+fn gmatch_honours_positive_negative_and_past_end_init_positions() {
+    assert_eq!(
+        execute_string_test(
+            r##"
+                local positive = string.gmatch("10 20 30", "%d+", 3)
+                local p1, p2 = positive(), positive()
+                local positive_done = select("#", positive())
+
+                local negative = string.gmatch("11 21 31", "%d+", -4)
+                local n1, n2 = negative(), negative()
+                local negative_done = select("#", negative())
+
+                local at_end = string.gmatch("11 21 31", "%w*", 9)
+                local end_match = at_end()
+                local at_end_done = select("#", at_end())
+
+                local past_end = string.gmatch("11 21 31", "%w*", 10)
+                local past_end_done = select("#", past_end())
+
+                return
+                    p1, p2, positive_done,
+                    n1, n2, negative_done,
+                    end_match, at_end_done, past_end_done
+            "##,
+        )
+        .unwrap(),
+        vec![
+            string("20"),
+            string("30"),
+            Value::Integer(0),
+            string("1"),
+            string("31"),
+            Value::Integer(0),
+            string(""),
+            Value::Integer(0),
+            Value::Integer(0),
+        ]
+    );
+}
+
+#[test]
+fn gmatch_treats_a_leading_caret_as_a_literal() {
+    assert_eq!(
+        execute_string_test(
+            r##"
+                local absent = string.gmatch("ab", "^.")
+                local literal = string.gmatch("^a x ^b", "^.")
+
+                return
+                    select("#", absent()),
+                    literal(),
+                    literal(),
+                    select("#", literal())
+            "##,
+        )
+        .unwrap(),
+        vec![
+            Value::Integer(0),
+            string("^a"),
+            string("^b"),
+            Value::Integer(0),
+        ]
+    );
+}
+
+#[test]
+fn gmatch_operates_on_raw_bytes() {
+    assert_eq!(
+        execute_string_test(
+            r##"
+                local iterator = string.gmatch("\255\0a", "(.)")
+                local first, second, third =
+                    iterator(), iterator(), iterator()
+                local done = select("#", iterator())
+                return first, second, third, done
+            "##,
+        )
+        .unwrap(),
+        vec![
+            string([0xff]),
+            string([0x00]),
+            string("a"),
+            Value::Integer(0),
+        ]
+    );
+}
+
+#[test]
+fn gmatch_reports_constructor_argument_errors() {
+    let mut state = installed_state();
+
+    for (arguments, expected) in [
+        (
+            vec![],
+            "bad argument #1 to 'gmatch' (string expected, got no value)",
+        ),
+        (
+            vec![string("abc")],
+            "bad argument #2 to 'gmatch' (string expected, got no value)",
+        ),
+        (
+            vec![Value::Table(state.create_table(0, 0).unwrap()), string("a")],
+            "bad argument #1 to 'gmatch' (string expected, got table)",
+        ),
+        (
+            vec![
+                string("abc"),
+                Value::Table(state.create_table(0, 0).unwrap()),
+            ],
+            "bad argument #2 to 'gmatch' (string expected, got table)",
+        ),
+        (
+            vec![
+                string("abc"),
+                string("a"),
+                Value::Table(state.create_table(0, 0).unwrap()),
+            ],
+            "bad argument #3 to 'gmatch' (number expected, got table)",
+        ),
+        (
+            vec![string("abc"), string("a"), Value::Float(1.5)],
+            "bad argument #3 to 'gmatch' (number has no integer representation)",
+        ),
+    ] {
+        assert_gmatch_error(call_gmatch(&mut state, &arguments).unwrap_err(), expected);
+    }
+}
+
+#[test]
+fn gmatch_reports_malformed_patterns_when_the_iterator_runs() {
+    let values = execute_string_test(
+        r#"
+            local iterator = string.gmatch("abc", "%")
+            local ok, message = pcall(iterator)
+            return type(iterator), ok, message
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(values[0], string("function"));
+    assert_eq!(values[1], Value::Boolean(false));
+    assert_string_contains(&values[2], b"malformed pattern (ends with '%')");
+}
+
+#[test]
+fn gmatch_iterator_keeps_its_captures_alive_across_collection() {
+    assert_eq!(
+        execute_string_test(
+            r#"
+                local iterator
+                do
+                    local subject = "left right"
+                    local pattern = "%w+"
+                    iterator = string.gmatch(subject, pattern)
+                end
+
+                collectgarbage("collect")
+                return iterator(), iterator()
+            "#,
+        )
+        .unwrap(),
+        vec![string("left"), string("right")]
+    );
+}

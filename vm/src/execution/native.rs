@@ -337,6 +337,20 @@ impl NativeServices for ExecutionNativeServices<'_> {
         self.keep_alive(value)
     }
 
+    fn create_native_function(
+        &mut self,
+        name: Box<str>,
+        callback: crate::NativeCallback,
+        captures: Box<[RawValue]>,
+    ) -> VmResult<RawValue> {
+        let value = self
+            .runtime
+            .allocate_native_function(name, callback, captures)
+            .map(RawValue::Function)?;
+
+        self.keep_alive(value)
+    }
+
     fn raw_get(&mut self, table: &RawValue, key: &RawValue) -> VmResult<RawValue> {
         let table = table.as_table().ok_or_else(|| {
             VmError::from(VmErrorKind::InvalidTableOperand {

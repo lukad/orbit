@@ -1,27 +1,20 @@
 use orbit_vm::{NativeAction, NativeContext, VmResult};
 
 use crate::{
-    argument, error,
+    argument::{self, required_integer, required_string},
     string::offsets::{end_offset, start_offset},
 };
 
 pub(crate) const FUNCTION_NAME: &str = "sub";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
-    let subject = context
-        .argument(0)
-        .ok_or_else(|| error::missing_value(FUNCTION_NAME, 1))?;
-
-    let string = subject
+    let string = required_string(context, FUNCTION_NAME, 0)?;
+    let string = string
         .as_string()
-        .ok_or_else(|| error::type_error(FUNCTION_NAME, 1, "string", Some(subject.type_name())))?;
+        .expect("required string is a string")
+        .as_bytes();
 
-    let start = match context.argument(1) {
-        Some(value) => argument::check_integer(&value, FUNCTION_NAME, 2)?,
-        None => {
-            return Err(error::type_error(FUNCTION_NAME, 2, "number", None));
-        }
-    };
+    let start = required_integer(context, FUNCTION_NAME, 1)?;
 
     let end = match context.argument(2) {
         None => -1,
@@ -34,7 +27,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
     let end = end_offset(end, len);
 
     let result = if start < end {
-        &string.as_bytes()[start..end]
+        &string[start..end]
     } else {
         &[]
     };

@@ -336,6 +336,33 @@ fn create_collect_and_read(context: &mut NativeContext<'_>) -> VmResult<NativeAc
     Ok(context.return_values([answer]))
 }
 
+fn return_created_function_capture(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    let capture = context
+        .capture(0)
+        .ok_or_else(|| native_failure("missing created-function capture"))?;
+
+    context.collect_garbage()?;
+
+    let key = context.string("answer");
+    let answer = context.raw_get(&capture, &key)?;
+    Ok(context.return_values([answer]))
+}
+
+fn create_function_and_collect(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    let capture = context.create_table(0, 1)?;
+    context.raw_set(&capture, context.string("answer"), context.integer(42))?;
+
+    let function = context.create_native_function(
+        "created native function",
+        return_created_function_capture,
+        [capture],
+    )?;
+
+    context.collect_garbage()?;
+
+    Ok(context.return_values([function]))
+}
+
 fn detach_raw_get_result_and_collect(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let owner = context
         .argument(0)
@@ -1100,6 +1127,35 @@ fn native_created_tables_are_roots_during_callback_collection() {
 
     let ExecutionOutcome::Returned { values, .. } = outcome else {
         panic!("native callback unexpectedly yielded");
+    };
+
+    assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
+}
+
+#[test]
+fn native_created_functions_and_their_captures_are_roots() {
+    let mut runtime = Runtime::new(Box::new(NoLoadService)).unwrap();
+    let factory = runtime
+        .allocate_native_function(
+            "create_function_and_collect",
+            create_function_and_collect,
+            Box::new([]),
+        )
+        .unwrap();
+
+    runtime
+        .set_global(b"create_function_and_collect", RawValue::Function(factory))
+        .unwrap();
+
+    let outcome = execution(
+        &mut runtime,
+        "local created = create_function_and_collect(); return created()",
+    )
+    .run()
+    .unwrap();
+
+    let ExecutionOutcome::Returned { values, .. } = outcome else {
+        panic!("created native function unexpectedly yielded");
     };
 
     assert_eq!(values.as_ref(), &[RawValue::Integer(42)]);
