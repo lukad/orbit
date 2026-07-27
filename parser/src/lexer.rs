@@ -91,7 +91,7 @@ pub enum Token {
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*", |lexer| Symbol::from(lexer.slice()))]
     Name(Symbol),
 
-    #[regex(r"[0-9]+", lex_number)]
+    #[regex(r"[0-9]+", lex_decimal_integer)]
     #[regex(r"0[xX][0-9A-Fa-f]+", lex_number)]
     #[regex(r"[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?", lex_number)]
     #[regex(r"\.[0-9]+(?:[eE][+-]?[0-9]+)?", lex_number)]
@@ -330,6 +330,36 @@ pub fn lex(source_id: SourceId, source: &str) -> LexResult<Vec<Spanned<Token>>> 
 
 fn lex_number(lexer: &mut LogosLexer<'_, Token>) -> Result<Number, LexErrorKind> {
     parse_lua_number(lexer.slice().as_bytes()).ok_or(LexErrorKind::InvalidNumber)
+}
+
+fn lex_decimal_integer(lexer: &mut LogosLexer<'_, Token>) -> Result<Number, LexErrorKind> {
+    let remainder = lexer.remainder().as_bytes();
+
+    if remainder.starts_with(b".") && !remainder.starts_with(b"..") {
+        let mut length = 1;
+
+        if matches!(remainder.get(length), Some(b'e' | b'E')) {
+            let exponent_start = length;
+            length += 1;
+
+            if matches!(remainder.get(length), Some(b'+' | b'-')) {
+                length += 1;
+            }
+
+            let digit_start = length;
+            while remainder.get(length).is_some_and(u8::is_ascii_digit) {
+                length += 1;
+            }
+
+            if length == digit_start {
+                length = exponent_start;
+            }
+        }
+
+        lexer.bump(length);
+    }
+
+    lex_number(lexer)
 }
 
 fn lex_short_string(lexer: &mut LogosLexer<'_, Token>) -> Result<ByteString, LexErrorKind> {
@@ -651,15 +681,17 @@ mod tests {
     fn lexes_lua_numbers_and_concatenation() {
         assert_eq!(
             tokens(
-                "0 42 3.5 .25 1e3 0x2a 0xF0.0 0x.8 0x1.8p1 0x4p-2 \
-                 9223372036854775807 9223372036854775808 1..2"
+                "0 42 3.5 0. .25 1e3 1.e2 0x2a 0xF0.0 0x.8 0x1.8p1 0x4p-2 \
+                 9223372036854775807 9223372036854775808 1..2 1..."
             ),
             vec![
                 integer(0),
                 integer(42),
                 float(3.5),
+                float(0.0),
                 float(0.25),
                 float(1000.0),
+                float(100.0),
                 integer(42),
                 float(240.0),
                 float(0.5),
@@ -670,6 +702,8 @@ mod tests {
                 integer(1),
                 Token::DotDot,
                 integer(2),
+                integer(1),
+                Token::Ellipsis,
                 Token::Eof,
             ]
         );
