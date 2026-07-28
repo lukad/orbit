@@ -59,6 +59,31 @@ fn install_registers_trigonometric_functions() {
 }
 
 #[test]
+fn huge_is_positive_infinity_and_keeps_its_field_name_in_errors() {
+    let mut state = installed_state();
+
+    let Value::Table(math) = state.get_global(b"math").unwrap() else {
+        panic!("math was not installed as a table");
+    };
+    assert_eq!(
+        state.raw_get(&math, &string("huge")).unwrap(),
+        Value::Float(f64::INFINITY)
+    );
+
+    let error = execute(&mut state, "return math.huge << 1").unwrap_err();
+    assert_eq!(
+        error.kind.to_string(),
+        "number (field 'huge') has no integer representation"
+    );
+
+    let error = execute(&mut state, "return ~math.foo").unwrap_err();
+    assert_eq!(
+        error.kind.to_string(),
+        "attempt to perform bitwise operation on a nil value (field 'foo')"
+    );
+}
+
+#[test]
 fn extrema_return_primitive_values_and_preserve_their_types() {
     let mut state = installed_state();
 

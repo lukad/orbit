@@ -1000,7 +1000,7 @@ fn invalid_unary_operands_return_typed_errors() {
     let error = execute_source("return ~1.5").unwrap_err();
     assert!(matches!(
         error.kind,
-        VmErrorKind::InvalidBitwiseOperand { kind: "number" }
+        VmErrorKind::NoIntegerRepresentation { .. }
     ));
 }
 
@@ -1018,11 +1018,7 @@ fn invalid_binary_operands_return_typed_errors() {
     let error = execute_source("return 1 & 1.5").unwrap_err();
     assert!(matches!(
         error.kind,
-        VmErrorKind::InvalidBitwiseOperands {
-            operation: "bitwise and",
-            left: "number",
-            right: "number"
-        }
+        VmErrorKind::NoIntegerRepresentation { .. }
     ));
 
     let error = execute_source("return true < false").unwrap_err();
@@ -1054,6 +1050,82 @@ fn invalid_binary_operands_return_typed_errors() {
             right: "number"
         }
     ));
+}
+
+#[test]
+fn integer_conversion_errors_describe_direct_table_fields() {
+    for source in [
+        "local math = { huge = 1e300 }; return math.huge << 1",
+        "local math = { huge = 1e300 }; return 1 << math.huge",
+        "local math = { huge = 1e300 }; return ~math.huge",
+    ] {
+        let error = execute_source(source).unwrap_err();
+
+        assert_eq!(
+            error.kind.to_string(),
+            "number (field 'huge') has no integer representation"
+        );
+    }
+
+    let error = execute_source(
+        r#"
+            local math = { huge = 1e300 }
+            local key = "huge"
+            return math[key] << 1
+        "#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.kind.to_string(),
+        "number (field '?') has no integer representation"
+    );
+
+    let error = execute_source("return 2.3 >> 0").unwrap_err();
+    assert_eq!(
+        error.kind.to_string(),
+        "number has no integer representation"
+    );
+}
+
+#[test]
+fn bitwise_type_errors_describe_the_invalid_operand() {
+    for source in [
+        "local math = {}; return ~math.foo",
+        "local math = {}; return math.foo & 1",
+        "local math = {}; return 1 & math.foo",
+    ] {
+        let error = execute_source(source).unwrap_err();
+
+        assert_eq!(
+            error.kind.to_string(),
+            "attempt to perform bitwise operation on a nil value (field 'foo')"
+        );
+    }
+
+    let error = execute_source(
+        r#"
+            local math = {}
+            local key = "foo"
+            return ~math[key]
+        "#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.kind.to_string(),
+        "attempt to perform bitwise operation on a nil value (field '?')"
+    );
+
+    let error = execute_source("return ~missing").unwrap_err();
+    assert_eq!(
+        error.kind.to_string(),
+        "attempt to perform bitwise operation on a nil value (global 'missing')"
+    );
+
+    let error = execute_source(r#"return "3" & 1"#).unwrap_err();
+    assert_eq!(
+        error.kind.to_string(),
+        "attempt to perform bitwise operation on a string value (constant '3')"
+    );
 }
 
 #[test]
@@ -3115,7 +3187,7 @@ fn missing_arithmetic_metamethods_preserve_the_existing_operand_errors() {
         execute_in_state(&mut state, SourceId::new(70), "return 1 & 1.5").unwrap_err();
     assert!(matches!(
         bitwise_error.kind,
-        VmErrorKind::InvalidBitwiseOperands { .. }
+        VmErrorKind::NoIntegerRepresentation { .. }
     ));
 }
 

@@ -1,8 +1,29 @@
 use orbit_compiler::bytecode::{BinaryOp, ImmediateOperandSide, Register, UnaryOp};
 
-use crate::{error::FaultResult, semantics, value::RawValue};
+use crate::{
+    error::{ErrorObjectName, FaultResult, VmErrorKind},
+    semantics,
+    value::RawValue,
+};
 
 use super::{Execution, FrameBoundary, ResultTarget};
+
+struct BinarySources {
+    left: Option<Register>,
+    right: Option<Register>,
+}
+
+impl BinarySources {
+    fn error_source(&self, error: &VmErrorKind, left: &RawValue) -> Option<Register> {
+        let left_failed = match error {
+            VmErrorKind::NoIntegerRepresentation { .. } => left.to_integer().is_none(),
+            VmErrorKind::InvalidBitwiseOperand { .. } => left.to_float().is_none(),
+            _ => return None,
+        };
+
+        if left_failed { self.left } else { self.right }
+    }
+}
 
 pub(crate) enum ComparisonOutcome {
     Value(bool),
@@ -21,6 +42,17 @@ impl Execution<'_> {
         immediate: i16,
         side: ImmediateOperandSide,
     ) -> FaultResult<Option<FrameBoundary>> {
+        let sources = match side {
+            ImmediateOperandSide::Left => BinarySources {
+                left: None,
+                right: Some(register),
+            },
+            ImmediateOperandSide::Right => BinarySources {
+                left: Some(register),
+                right: None,
+            },
+        };
+
         let register = self.read_register(register)?;
         let immediate = RawValue::Integer(i64::from(immediate));
         let (left, right) = match side {
@@ -28,7 +60,7 @@ impl Execution<'_> {
             ImmediateOperandSide::Right => (register, immediate),
         };
 
-        self.binary_values(operation, destination, left, right)
+        self.binary_values(operation, destination, left, right, sources)
     }
 
     pub(super) fn unary(
@@ -37,7 +69,8 @@ impl Execution<'_> {
         destination: Register,
         operand: Register,
     ) -> FaultResult<Option<FrameBoundary>> {
-        let operand = self.read_register(operand)?;
+        let operand_register = operand;
+        let operand = self.read_register(operand_register)?;
 
         let primitive = match (operation, &operand) {
             (UnaryOp::Length, RawValue::Table(table)) => {
@@ -54,17 +87,17 @@ impl Execution<'_> {
             }
             Err(error) => {
                 let Some(name) = unary_metamethod_name(operation) else {
-                    return Err(error);
+                    return Err(self.qualify_operand_error(error, Some(operand_register)));
                 };
 
                 if unary_primitive_applies(operation, &operand) {
-                    return Err(error);
+                    return Err(self.qualify_operand_error(error, Some(operand_register)));
                 }
 
                 let metamethod = self.runtime.metamethod(&operand, name)?;
 
                 if metamethod.is_nil() {
-                    return Err(error);
+                    return Err(self.qualify_operand_error(error, Some(operand_register)));
                 }
 
                 let arguments = vec![operand.clone(), operand].into_boxed_slice();
@@ -85,10 +118,15 @@ impl Execution<'_> {
         left: Register,
         right: Register,
     ) -> FaultResult<Option<FrameBoundary>> {
+        let sources = BinarySources {
+            left: Some(left),
+            right: Some(right),
+        };
+
         let left = self.read_register(left)?;
         let right = self.read_register(right)?;
 
-        self.binary_values(operation, destination, left, right)
+        self.binary_values(operation, destination, left, right, sources)
     }
 
     fn binary_values(
@@ -97,6 +135,7 @@ impl Execution<'_> {
         destination: Register,
         left: RawValue,
         right: RawValue,
+        sources: BinarySources,
     ) -> FaultResult<Option<FrameBoundary>> {
         if let (RawValue::Integer(left), RawValue::Integer(right)) = (&left, &right) {
             let result = match operation {
@@ -153,7 +192,8 @@ impl Execution<'_> {
                 }
 
                 let Some(metamethod) = self.find_binary_metamethod(&left, &right, name)? else {
-                    return Err(error);
+                    let source = sources.error_source(&error, &left);
+                    return Err(self.qualify_operand_error(error, source));
                 };
 
                 Ok(Some(FrameBoundary::Invoke {
@@ -248,6 +288,26 @@ impl Execution<'_> {
         }
 
         Ok(None)
+    }
+
+    fn qualify_operand_error(&self, error: VmErrorKind, source: Option<Register>) -> VmErrorKind {
+        let object = source
+            .and_then(|register| self.error_object_name(register))
+            .unwrap_or_default();
+
+        match error {
+            VmErrorKind::NoIntegerRepresentation { .. } => {
+                VmErrorKind::NoIntegerRepresentation { object }
+            }
+            VmErrorKind::InvalidBitwiseOperand { kind, .. } => {
+                VmErrorKind::InvalidBitwiseOperand { kind, object }
+            }
+            error => error,
+        }
+    }
+
+    fn error_object_name(&self, register: Register) -> Option<ErrorObjectName> {
+        self.active_lua_frame().error_object_name(register)
     }
 }
 

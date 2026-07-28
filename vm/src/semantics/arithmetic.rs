@@ -1,5 +1,5 @@
 use crate::{
-    error::{FaultResult, VmErrorKind},
+    error::{ErrorObjectName, FaultResult, VmErrorKind},
     number::{float_modulo, integer_floor_divide, integer_modulo, shift_left, shift_right},
     value::RawValue,
 };
@@ -15,13 +15,16 @@ pub(super) fn negate(operand: &RawValue) -> FaultResult<RawValue> {
 }
 
 pub(super) fn bitwise_not(operand: &RawValue) -> FaultResult<RawValue> {
-    let integer = operand
-        .to_integer()
-        .ok_or(VmErrorKind::InvalidBitwiseOperand {
+    match operand.to_integer() {
+        Some(integer) => Ok(RawValue::Integer(!integer)),
+        None if operand.to_float().is_some() => Err(VmErrorKind::NoIntegerRepresentation {
+            object: ErrorObjectName::Unknown,
+        }),
+        None => Err(VmErrorKind::InvalidBitwiseOperand {
             kind: operand.type_name(),
-        })?;
-
-    Ok(RawValue::Integer(!integer))
+            object: ErrorObjectName::Unknown,
+        }),
+    }
 }
 
 pub(super) fn add(left: &RawValue, right: &RawValue) -> FaultResult<RawValue> {
@@ -147,38 +150,48 @@ pub(super) fn power(left: &RawValue, right: &RawValue) -> FaultResult<RawValue> 
 }
 
 pub(super) fn bitwise_and(left: &RawValue, right: &RawValue) -> FaultResult<RawValue> {
-    bitwise("bitwise and", left, right, |left, right| left & right)
+    bitwise(left, right, |left, right| left & right)
 }
 
 pub(super) fn bitwise_or(left: &RawValue, right: &RawValue) -> FaultResult<RawValue> {
-    bitwise("bitwise or", left, right, |left, right| left | right)
+    bitwise(left, right, |left, right| left | right)
 }
 
 pub(super) fn bitwise_xor(left: &RawValue, right: &RawValue) -> FaultResult<RawValue> {
-    bitwise("bitwise xor", left, right, |left, right| left ^ right)
+    bitwise(left, right, |left, right| left ^ right)
 }
 
 pub(super) fn shift_left_value(left: &RawValue, right: &RawValue) -> FaultResult<RawValue> {
-    bitwise("left shift", left, right, shift_left)
+    bitwise(left, right, shift_left)
 }
 
 pub(super) fn shift_right_value(left: &RawValue, right: &RawValue) -> FaultResult<RawValue> {
-    bitwise("right shift", left, right, shift_right)
+    bitwise(left, right, shift_right)
 }
 
 fn bitwise(
-    operation: &'static str,
     left: &RawValue,
     right: &RawValue,
     apply: impl FnOnce(i64, i64) -> i64,
 ) -> FaultResult<RawValue> {
-    let (Some(left_integer), Some(right_integer)) = (left.to_integer(), right.to_integer()) else {
-        return Err(VmErrorKind::InvalidBitwiseOperands {
-            operation,
-            left: left.type_name(),
-            right: right.type_name(),
-        });
-    };
+    match (left.to_integer(), right.to_integer()) {
+        (Some(left), Some(right)) => Ok(RawValue::Integer(apply(left, right))),
+        _ if left.to_float().is_some() && right.to_float().is_some() => {
+            Err(VmErrorKind::NoIntegerRepresentation {
+                object: ErrorObjectName::Unknown,
+            })
+        }
+        _ => {
+            let operand = if left.to_float().is_none() {
+                left
+            } else {
+                right
+            };
 
-    Ok(RawValue::Integer(apply(left_integer, right_integer)))
+            Err(VmErrorKind::InvalidBitwiseOperand {
+                kind: operand.type_name(),
+                object: ErrorObjectName::Unknown,
+            })
+        }
+    }
 }

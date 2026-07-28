@@ -5,7 +5,9 @@ use orbit_compiler::bytecode::{
 };
 
 use crate::{
-    error::{FaultResult, LuaTraceFunction, VmErrorKind, VmTraceFrame},
+    error::{
+        ErrorObjectKind, ErrorObjectName, FaultResult, LuaTraceFunction, VmErrorKind, VmTraceFrame,
+    },
     function::LuaInvocation,
     id::{FunctionId, ObjectId, UpvalueId},
     prototype::{
@@ -1203,6 +1205,10 @@ impl CallFrame {
         &self.runtime_prototype
     }
 
+    pub(crate) fn error_object_name(&self, register: Register) -> Option<ErrorObjectName> {
+        object_name(self.runtime_prototype(), self.current_pc?, register)
+    }
+
     pub(crate) fn close_name(&self) -> Option<&str> {
         self.runtime_prototype.close_name(self.current_pc?)
     }
@@ -1266,6 +1272,165 @@ impl CallFrame {
     pub(crate) fn gc_pc_for_test(&self) -> usize {
         self.gc_pc
     }
+}
+
+fn object_name(
+    prototype: &RuntimePrototype,
+    before: usize,
+    register: Register,
+) -> Option<ErrorObjectName> {
+    let (definition_pc, instruction) = last_register_definition(prototype, before, register)?;
+
+    match instruction {
+        Instruction::LoadConst { constant, .. } => {
+            let name = constant_string(prototype, constant)?;
+
+            Some(ErrorObjectName::Named {
+                kind: ErrorObjectKind::Constant,
+                name,
+            })
+        }
+        Instruction::GetTable { table, key, .. } => {
+            let name = register_constant_string(prototype, definition_pc, key)
+                .unwrap_or_else(|| Box::from(b"?".as_slice()));
+            let kind = if is_environment_register(prototype, definition_pc, table) {
+                ErrorObjectKind::Global
+            } else {
+                ErrorObjectKind::Field
+            };
+
+            Some(ErrorObjectName::Named { kind, name })
+        }
+        _ => None,
+    }
+}
+
+fn register_constant_string(
+    prototype: &RuntimePrototype,
+    before: usize,
+    register: Register,
+) -> Option<Box<[u8]>> {
+    let (_, instruction) = last_register_definition(prototype, before, register)?;
+
+    match instruction {
+        Instruction::LoadConst { constant, .. } => constant_string(prototype, constant),
+        _ => None,
+    }
+}
+
+fn constant_string(prototype: &RuntimePrototype, constant: ConstantIndex) -> Option<Box<[u8]>> {
+    match prototype.constant(constant)? {
+        RuntimeConstant::String(string) => Some(string.as_bytes().into()),
+        RuntimeConstant::Integer(_) | RuntimeConstant::Float(_) => None,
+    }
+}
+
+fn is_environment_register(
+    prototype: &RuntimePrototype,
+    before: usize,
+    register: Register,
+) -> bool {
+    let Some((_, instruction)) = last_register_definition(prototype, before, register) else {
+        return false;
+    };
+
+    match instruction {
+        Instruction::GetUpvalue { upvalue, .. } => matches!(
+            prototype.capture_descriptors().get(upvalue.get() as usize),
+            Some(CaptureDescriptor::ExternalEnvironment)
+        ),
+        _ => false,
+    }
+}
+
+fn last_register_definition(
+    prototype: &RuntimePrototype,
+    before: usize,
+    register: Register,
+) -> Option<(usize, Instruction)> {
+    let mut definition = None;
+    let mut conditional_until = 0;
+
+    for pc in 0..before {
+        let instruction = *prototype.instruction(pc)?;
+
+        if let Some(target) = jump_target(pc, instruction)
+            && target <= before
+            && target > conditional_until
+        {
+            conditional_until = target;
+        }
+
+        if instruction_writes_register(instruction, register) {
+            definition = (pc >= conditional_until).then_some((pc, instruction));
+        }
+    }
+
+    definition
+}
+
+fn jump_target(pc: usize, instruction: Instruction) -> Option<usize> {
+    let offset = match instruction {
+        Instruction::Jump { offset }
+        | Instruction::JumpIfFalsy { offset, .. }
+        | Instruction::JumpIfNotEqualSmallInt { offset, .. } => offset,
+        Instruction::ForPrep { exit_offset, .. } => exit_offset,
+        Instruction::ForLoop { body_offset, .. } | Instruction::TForLoop { body_offset, .. } => {
+            body_offset
+        }
+        _ => return None,
+    };
+
+    pc.checked_add(1)?.checked_add_signed(offset as isize)
+}
+
+fn instruction_writes_register(instruction: Instruction, register: Register) -> bool {
+    match instruction {
+        Instruction::LoadNil { dst }
+        | Instruction::LoadBool { dst, .. }
+        | Instruction::LoadSmallInt { dst, .. }
+        | Instruction::LoadConst { dst, .. }
+        | Instruction::Move { dst, .. }
+        | Instruction::GetUpvalue { dst, .. }
+        | Instruction::NewTable { dst, .. }
+        | Instruction::GetTable { dst, .. }
+        | Instruction::Unary { dst, .. }
+        | Instruction::Binary { dst, .. }
+        | Instruction::BinarySmallInt { dst, .. }
+        | Instruction::Closure { dst, .. } => dst == register,
+        Instruction::Call { base, results, .. } | Instruction::Vararg { base, results } => {
+            match results {
+                Count::Fixed(count) => register_in_range(register, base, count),
+                Count::Open => register.0 >= base.0,
+            }
+        }
+        Instruction::ForPrep { base, .. } => register_in_range(register, base, 4),
+        Instruction::ForLoop { base, .. } => {
+            register == base || register.0.checked_sub(base.0) == Some(3)
+        }
+        Instruction::TForCall { base, variables } => base
+            .0
+            .checked_add(4)
+            .is_some_and(|start| register_in_range(register, Register(start), variables)),
+        Instruction::TForLoop { base, .. } => register.0.checked_sub(base.0) == Some(2),
+        Instruction::SetUpvalue { .. }
+        | Instruction::SetTable { .. }
+        | Instruction::SetList { .. }
+        | Instruction::MarkToClose { .. }
+        | Instruction::CloseFrom { .. }
+        | Instruction::Jump { .. }
+        | Instruction::JumpIfFalsy { .. }
+        | Instruction::JumpIfNotEqualSmallInt { .. }
+        | Instruction::TailCall { .. }
+        | Instruction::Return { .. } => false,
+    }
+}
+
+fn register_in_range(register: Register, base: Register, count: u8) -> bool {
+    let register = u16::from(register.0);
+    let start = u16::from(base.0);
+
+    (start..start + u16::from(count)).contains(&register)
 }
 
 fn visit_register_slot(slot: &RegisterSlot, visit: &mut impl FnMut(ObjectId)) {

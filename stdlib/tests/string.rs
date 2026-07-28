@@ -1380,12 +1380,8 @@ fn non_arithmetic_operators_and_invalid_strings_do_not_coerce() {
 
     let error = execute_string_test(r#"return "3" & 1"#).unwrap_err();
     assert_eq!(
-        error.kind,
-        VmErrorKind::InvalidBitwiseOperands {
-            operation: "bitwise and",
-            left: "string",
-            right: "number",
-        }
+        error.kind.to_string(),
+        "attempt to perform bitwise operation on a string value (constant '3')"
     );
 
     let error = execute_string_test(r#"return "1" < 1"#).unwrap_err();

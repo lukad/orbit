@@ -4,6 +4,45 @@ use orbit_common::Span;
 
 use crate::{LuaString, Value, loading::LoadError};
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ErrorObjectName {
+    #[default]
+    Unknown,
+    Named {
+        kind: ErrorObjectKind,
+        name: Box<[u8]>,
+    },
+}
+
+impl std::fmt::Display for ErrorObjectName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self::Named { kind, name } = self else {
+            return Ok(());
+        };
+
+        let kind = match kind {
+            ErrorObjectKind::Global => "global",
+            ErrorObjectKind::Field => "field",
+            ErrorObjectKind::Local => "local",
+            ErrorObjectKind::Upvalue => "upvalue",
+            ErrorObjectKind::Method => "method",
+            ErrorObjectKind::Constant => "constant",
+        };
+
+        write!(formatter, " ({kind} '{}')", String::from_utf8_lossy(name))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorObjectKind {
+    Global,
+    Field,
+    Local,
+    Upvalue,
+    Method,
+    Constant,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VmErrorKind {
     #[error("program counter out of bounds: {pc}")]
@@ -22,8 +61,11 @@ pub enum VmErrorKind {
     StringTooLong { length: usize },
     #[error("attempt to negate a {kind} value")]
     InvalidNegateOperand { kind: &'static str },
-    #[error("attempt to perform bitwise not on a {kind} value")]
-    InvalidBitwiseOperand { kind: &'static str },
+    #[error("attempt to perform bitwise operation on a {kind} value{object}")]
+    InvalidBitwiseOperand {
+        kind: &'static str,
+        object: ErrorObjectName,
+    },
     #[error("attempt to add a {left} value and a {right} value")]
     InvalidAddOperands {
         left: &'static str,
@@ -49,7 +91,7 @@ pub enum VmErrorKind {
         left: &'static str,
         right: &'static str,
     },
-    #[error("attempt to divide an integer by zero")]
+    #[error("attempt to divide by zero")]
     IntegerDivisionByZero,
     #[error("attempt to calculate modulo of a {left} value by a {right} value")]
     InvalidModuloOperands {
@@ -63,12 +105,8 @@ pub enum VmErrorKind {
         left: &'static str,
         right: &'static str,
     },
-    #[error("attempt to perform {operation} on a {left} value and a {right} value")]
-    InvalidBitwiseOperands {
-        operation: &'static str,
-        left: &'static str,
-        right: &'static str,
-    },
+    #[error("number{object} has no integer representation")]
+    NoIntegerRepresentation { object: ErrorObjectName },
     #[error("attempt to concatenate a {left} value and a {right} value")]
     InvalidConcatOperands {
         left: &'static str,

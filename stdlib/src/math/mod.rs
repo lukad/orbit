@@ -41,6 +41,7 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
 
     set_field(state, &math, b"mininteger", &Value::Integer(i64::MIN))?;
     set_field(state, &math, b"maxinteger", &Value::Integer(i64::MAX))?;
+    set_field(state, &math, b"huge", &Value::Float(f64::INFINITY))?;
 
     state.set_global(b"math", &Value::Table(math))
 }

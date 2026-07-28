@@ -140,7 +140,7 @@ fn bitwise_operations_accept_exact_floats() {
             &RawValue::Float(3.5),
             &RawValue::Integer(1),
         ),
-        Err(VmErrorKind::InvalidBitwiseOperands { .. })
+        Err(VmErrorKind::NoIntegerRepresentation { .. })
     ));
 }
 
