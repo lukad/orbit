@@ -169,6 +169,8 @@ fn parse_decimal_float(source: &[u8]) -> Option<f64> {
 }
 
 fn parse_hex_float(source: &[u8]) -> Option<f64> {
+    const MAX_SIGNIFICANT_DIGITS: usize = 30;
+
     let source = source
         .strip_prefix(b"0x")
         .or_else(|| source.strip_prefix(b"0X"))?;
@@ -186,8 +188,9 @@ fn parse_hex_float(source: &[u8]) -> Option<f64> {
 
     let mut value = 0.0;
     let mut fractional = false;
-    let mut fractional_place = 1.0 / 16.0;
-    let mut digits = 0;
+    let mut significant_digits = 0_usize;
+    let mut has_digit = false;
+    let mut hexadecimal_exponent = 0_i64;
 
     for &byte in significand {
         if byte == b'.' {
@@ -200,26 +203,71 @@ fn parse_hex_float(source: &[u8]) -> Option<f64> {
         }
 
         let digit = f64::from(hex_value(byte)?);
-        digits += 1;
+        has_digit = true;
+
+        if significant_digits != 0 || digit != 0.0 {
+            significant_digits = significant_digits.saturating_add(1);
+
+            if significant_digits <= MAX_SIGNIFICANT_DIGITS {
+                value = value * 16.0 + digit;
+            } else {
+                hexadecimal_exponent = hexadecimal_exponent.saturating_add(1);
+            }
+        }
 
         if fractional {
-            value += digit * fractional_place;
-            fractional_place /= 16.0;
-        } else {
-            value = value * 16.0 + digit;
+            hexadecimal_exponent = hexadecimal_exponent.saturating_sub(1);
         }
     }
 
-    if digits == 0 {
+    if !has_digit {
         return None;
     }
 
-    // Avoid 0 * infinity becoming NaN for huge positive exponents.
     if value == 0.0 {
         return Some(0.0);
     }
 
-    Some(value * 2.0_f64.powi(exponent))
+    let binary_exponent = hexadecimal_exponent
+        .saturating_mul(4)
+        .saturating_add(i64::from(exponent));
+
+    Some(scale_by_power_of_two(value, binary_exponent))
+}
+
+fn scale_by_power_of_two(value: f64, exponent: i64) -> f64 {
+    debug_assert!(value.is_finite() && value > 0.0);
+
+    const FRACTION_BITS: u32 = f64::MANTISSA_DIGITS - 1;
+    const EXPONENT_BIAS: i64 = 1023;
+    const MAX_EXPONENT: i64 = 1023;
+    const MIN_SUBNORMAL_EXPONENT: i64 = -1074;
+
+    let bits = value.to_bits();
+    let value_exponent = i64::from(((bits >> FRACTION_BITS) & 0x7ff) as u16) - EXPONENT_BIAS;
+    let fraction = bits & ((1_u64 << FRACTION_BITS) - 1);
+    let normalized = f64::from_bits(((EXPONENT_BIAS as u64) << FRACTION_BITS) | fraction);
+    let exponent = value_exponent.saturating_add(exponent);
+
+    if exponent > MAX_EXPONENT {
+        return f64::INFINITY;
+    }
+
+    if exponent < MIN_SUBNORMAL_EXPONENT - 1 {
+        return 0.0;
+    }
+
+    if exponent == MIN_SUBNORMAL_EXPONENT - 1 {
+        return (normalized * 0.5) * f64::from_bits(1);
+    }
+
+    let scale = if exponent > -EXPONENT_BIAS {
+        f64::from_bits(((exponent + EXPONENT_BIAS) as u64) << FRACTION_BITS)
+    } else {
+        f64::from_bits(1_u64 << (exponent - MIN_SUBNORMAL_EXPONENT))
+    };
+
+    normalized * scale
 }
 
 fn parse_exponent(source: &[u8]) -> Option<i32> {
@@ -305,7 +353,41 @@ fn float_to_integer(value: f64) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_lua_integer_with_base;
+    use super::{Number, parse_lua_integer_with_base, parse_lua_number};
+
+    #[test]
+    fn hexadecimal_float_exponents_scale_long_significands_without_intermediate_overflow() {
+        let mut source = b"0xe03".to_vec();
+        source.extend(std::iter::repeat_n(b'0', 1000));
+        source.extend_from_slice(b"p-4000");
+
+        assert_eq!(parse_lua_number(&source), Some(Number::Float(3587.0)));
+    }
+
+    #[test]
+    fn hexadecimal_float_exponents_scale_long_fractional_prefixes_without_underflow() {
+        let mut source = b"0x0.".to_vec();
+        source.extend(std::iter::repeat_n(b'0', 1000));
+        source.extend_from_slice(b"e03p4000");
+
+        assert_eq!(
+            parse_lua_number(&source),
+            Some(Number::Float(3587.0 / 4096.0))
+        );
+    }
+
+    #[test]
+    fn hexadecimal_float_scaling_handles_finite_overflow_and_subnormal_boundaries() {
+        for (source, expected) in [
+            (b"0x1.fffffffffffffp1023".as_slice(), f64::MAX),
+            (b"0x1p1024".as_slice(), f64::INFINITY),
+            (b"0x1p-1074".as_slice(), f64::from_bits(1)),
+            (b"0x1p-1075".as_slice(), 0.0),
+            (b"0x1.8p-1075".as_slice(), f64::from_bits(1)),
+        ] {
+            assert_eq!(parse_lua_number(source), Some(Number::Float(expected)));
+        }
+    }
 
     #[test]
     fn parses_integer_numerals_in_explicit_bases() {

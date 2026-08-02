@@ -84,6 +84,19 @@ fn hexadecimal_strings_convert_to_integers_or_floats() {
 }
 
 #[test]
+fn long_hexadecimal_significands_apply_the_exponent_before_overflowing_or_underflowing() {
+    let mut state = installed_state();
+    let mut source = b"0xe03".to_vec();
+    source.extend(std::iter::repeat_n(b'0', 1000));
+    source.extend_from_slice(b"p-4000");
+
+    assert_eq!(
+        call_tonumber(&mut state, &[string(source)]).unwrap(),
+        vec![Value::Float(3587.0)]
+    );
+}
+
+#[test]
 fn values_without_a_numeric_conversion_return_nil() {
     let mut state = installed_state();
 
