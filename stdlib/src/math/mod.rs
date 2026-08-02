@@ -14,6 +14,7 @@ mod max;
 mod min;
 mod modf;
 mod rad;
+mod random;
 mod sin;
 mod sqrt;
 mod tan;
@@ -97,6 +98,21 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
     set_field(state, &math, b"maxinteger", &Value::Integer(i64::MAX))?;
     set_field(state, &math, b"huge", &Value::Float(f64::INFINITY))?;
     set_field(state, &math, b"pi", &Value::Float(std::f64::consts::PI))?;
+
+    let random_state = random::create_state(state)?;
+    let random_capture = [Value::Table(random_state)];
+
+    let random = state.create_native_function("math.random", random::callback, &random_capture)?;
+    let random_seed =
+        state.create_native_function("math.randomseed", random::seed_callback, &random_capture)?;
+
+    set_field(state, &math, random::FUNCTION, &Value::Function(random))?;
+    set_field(
+        state,
+        &math,
+        random::SEED_FUNCTION,
+        &Value::Function(random_seed),
+    )?;
 
     state.set_global(b"math", &Value::Table(math))
 }

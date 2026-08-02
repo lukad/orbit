@@ -1834,3 +1834,235 @@ fn modf_reports_missing_and_non_numeric_arguments() {
         ));
     }
 }
+
+#[test]
+fn install_registers_math_random_functions() {
+    let mut state = installed_state();
+
+    let Value::Table(math) = state.get_global(b"math").unwrap() else {
+        panic!("math was not installed as a table");
+    };
+
+    for name in ["random", "randomseed"] {
+        assert!(matches!(
+            state.raw_get(&math, &string(name)).unwrap(),
+            Value::Function(_)
+        ));
+    }
+}
+
+#[test]
+fn randomseed_reproduces_lua_54s_seeded_sequence() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local first_seed, second_seed = math.randomseed(1007)
+            local integer = math.random(0)
+
+            local repeated_first, repeated_second = math.randomseed(1007, nil)
+            local fraction = math.random()
+
+            return
+                first_seed, second_seed,
+                repeated_first, repeated_second,
+                integer, fraction
+        "#,
+    )
+    .unwrap();
+
+    let expected_random = 0x7a70_40a5_a323_c9d6_u64;
+    let expected_fraction = ((expected_random >> 11) as f64) / ((1_u64 << 53) as f64);
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(1007),
+            Value::Integer(0),
+            Value::Integer(1007),
+            Value::Integer(0),
+            Value::Integer(expected_random as i64),
+            Value::Float(expected_fraction),
+        ]
+    );
+}
+
+#[test]
+fn randomseed_returns_automatic_seeds_that_replay_the_sequence() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local first_seed, second_seed = math.randomseed()
+            local expected_integer = math.random(0)
+            local expected_fraction = math.random()
+
+            local repeated_first, repeated_second =
+                math.randomseed(first_seed, second_seed)
+
+            return
+                type(first_seed), type(second_seed),
+                repeated_first == first_seed,
+                repeated_second == second_seed,
+                math.random(0) == expected_integer,
+                math.random() == expected_fraction
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            string("number"),
+            string("number"),
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+            Value::Boolean(true),
+        ]
+    );
+}
+
+#[test]
+fn randomseed_ignores_arguments_after_the_second() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            local first_seed, second_seed = math.randomseed(123, 456, "ignored")
+            local expected = math.random(0)
+
+            math.randomseed(123, 456)
+
+            return first_seed, second_seed, math.random(0) == expected
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Integer(123),
+            Value::Integer(456),
+            Value::Boolean(true),
+        ]
+    );
+}
+
+#[test]
+fn random_supports_float_full_integer_and_bounded_forms() {
+    let mut state = installed_state();
+
+    let values = execute(
+        &mut state,
+        r#"
+            math.randomseed(123, 456)
+
+            local values_are_in_range = true
+            for _ = 1, 256 do
+                local fraction = math.random()
+                local die = math.random(6)
+                local signed = math.random(-10, 10)
+
+                values_are_in_range = values_are_in_range
+                    and 0 <= fraction and fraction < 1
+                    and 1 <= die and die <= 6
+                    and -10 <= signed and signed <= 10
+            end
+
+            math.randomseed(1007)
+            local full_integer = math.random(0)
+            math.randomseed(1007)
+            local full_interval = math.random(math.mininteger, math.maxinteger)
+
+            return
+                values_are_in_range,
+                math.random(-10, -10),
+                math.random(math.mininteger, math.mininteger),
+                math.random(math.maxinteger, math.maxinteger),
+                full_interval == full_integer + math.mininteger
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            Value::Boolean(true),
+            Value::Integer(-10),
+            Value::Integer(i64::MIN),
+            Value::Integer(i64::MAX),
+            Value::Boolean(true),
+        ]
+    );
+}
+
+#[test]
+fn randomseed_reports_invalid_seed_arguments() {
+    let mut state = installed_state();
+
+    for (source, message) in [
+        (
+            "return math.randomseed(nil)",
+            "bad argument #1 to 'randomseed' (number expected, got nil)",
+        ),
+        (
+            "return math.randomseed(1, {})",
+            "bad argument #2 to 'randomseed' (number expected, got table)",
+        ),
+        (
+            "return math.randomseed(1.5)",
+            "bad argument #1 to 'randomseed' (number has no integer representation)",
+        ),
+    ] {
+        let error = execute(&mut state, source).unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            VmErrorKind::NativeFunctionFailure {
+                message: message.into(),
+            }
+        );
+        assert!(matches!(
+            error.frames.first(),
+            Some(VmTraceFrame::Native { name }) if name.as_ref() == "math.randomseed"
+        ));
+    }
+}
+
+#[test]
+fn random_reports_invalid_argument_lists_and_intervals() {
+    let mut state = installed_state();
+
+    for (source, message) in [
+        ("return math.random(1, 2, 3)", "wrong number of arguments"),
+        (
+            "return math.random(2, 1)",
+            "bad argument #1 to 'random' (interval is empty)",
+        ),
+        (
+            "return math.random({})",
+            "bad argument #1 to 'random' (number expected, got table)",
+        ),
+        (
+            "return math.random(1, 2.5)",
+            "bad argument #2 to 'random' (number has no integer representation)",
+        ),
+    ] {
+        let error = execute(&mut state, source).unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            VmErrorKind::NativeFunctionFailure {
+                message: message.into(),
+            }
+        );
+        assert!(matches!(
+            error.frames.first(),
+            Some(VmTraceFrame::Native { name }) if name.as_ref() == "math.random"
+        ));
+    }
+}
