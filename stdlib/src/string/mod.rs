@@ -1,5 +1,6 @@
 mod arithmetic;
 mod byte;
+mod char;
 mod find;
 mod format;
 mod formatting;
@@ -23,6 +24,9 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
 
     let byte = state.create_native_function("string.byte", byte::callback, &[])?;
     set_field(state, &string, byte::FUNCTION_NAME, &Value::Function(byte))?;
+
+    let char = state.create_native_function("string.char", char::callback, &[])?;
+    set_field(state, &string, char::FUNCTION_NAME, &Value::Function(char))?;
 
     let sub = state.create_native_function("string.sub", sub::callback, &[])?;
     set_field(state, &string, sub::FUNCTION_NAME, &Value::Function(sub))?;

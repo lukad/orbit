@@ -42,6 +42,33 @@ fn assert_byte_error(error: VmError, expected: &str) {
     ));
 }
 
+fn call_char(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(char) = state.raw_get(&string_library, &string("char"))? else {
+        panic!("string.char was not installed as a function");
+    };
+
+    match state.call(&char, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.char unexpectedly yielded"),
+    }
+}
+
+fn assert_char_error(error: VmError, expected: &str) {
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: expected.into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.char"
+    ));
+}
+
 fn call_sub(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
     let Value::Table(string_library) = state.get_global(b"string")? else {
         panic!("string was not installed as a table");
@@ -279,6 +306,122 @@ fn byte_reports_lua_argument_errors() {
         ),
     ] {
         assert_byte_error(call_byte(&mut state, &arguments).unwrap_err(), expected);
+    }
+}
+
+#[test]
+fn install_registers_string_char() {
+    let mut state = installed_state();
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+
+    assert!(matches!(
+        state.raw_get(&string_library, &string("char")).unwrap(),
+        Value::Function(_)
+    ));
+}
+
+#[test]
+fn char_builds_strings_from_zero_or_more_byte_values() {
+    let mut state = installed_state();
+
+    for (arguments, expected) in [
+        (vec![], string([])),
+        (vec![Value::Integer(65)], string("A")),
+        (
+            vec![Value::Integer(65), Value::Integer(66), Value::Integer(67)],
+            string("ABC"),
+        ),
+        (
+            vec![Value::Integer(0), Value::Integer(255), Value::Integer(0)],
+            string([0x00, 0xff, 0x00]),
+        ),
+        (
+            vec![Value::Integer(0xc3), Value::Integer(0xa9)],
+            string([0xc3, 0xa9]),
+        ),
+    ] {
+        assert_eq!(call_char(&mut state, &arguments).unwrap(), vec![expected]);
+    }
+}
+
+#[test]
+fn char_accepts_every_unsigned_byte_value() {
+    let mut state = installed_state();
+    let arguments = (u8::MIN..=u8::MAX)
+        .map(|byte| Value::Integer(i64::from(byte)))
+        .collect::<Vec<_>>();
+    let expected = (u8::MIN..=u8::MAX).collect::<Vec<_>>();
+
+    assert_eq!(
+        call_char(&mut state, &arguments).unwrap(),
+        vec![string(expected)]
+    );
+}
+
+#[test]
+fn char_coerces_exact_integer_strings_and_floats() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        call_char(
+            &mut state,
+            &[string("65"), Value::Float(66.0), string("67.0")]
+        )
+        .unwrap(),
+        vec![string("ABC")]
+    );
+}
+
+#[test]
+fn char_reports_non_integer_and_out_of_range_arguments() {
+    let mut state = installed_state();
+    let table = Value::Table(state.create_table(0, 0).unwrap());
+
+    for (arguments, expected) in [
+        (
+            vec![Value::Boolean(true)],
+            "bad argument #1 to 'char' (number expected, got boolean)",
+        ),
+        (
+            vec![table],
+            "bad argument #1 to 'char' (number expected, got table)",
+        ),
+        (
+            vec![Value::Float(1.5)],
+            "bad argument #1 to 'char' (number has no integer representation)",
+        ),
+        (
+            vec![string("1.5")],
+            "bad argument #1 to 'char' (number has no integer representation)",
+        ),
+        (
+            vec![Value::Float(f64::INFINITY)],
+            "bad argument #1 to 'char' (number has no integer representation)",
+        ),
+        (
+            vec![Value::Integer(-1)],
+            "bad argument #1 to 'char' (value out of range)",
+        ),
+        (
+            vec![Value::Integer(256)],
+            "bad argument #1 to 'char' (value out of range)",
+        ),
+        (
+            vec![Value::Integer(i64::MIN)],
+            "bad argument #1 to 'char' (value out of range)",
+        ),
+        (
+            vec![Value::Integer(i64::MAX)],
+            "bad argument #1 to 'char' (value out of range)",
+        ),
+        (
+            vec![Value::Integer(65), Value::Integer(256)],
+            "bad argument #2 to 'char' (value out of range)",
+        ),
+    ] {
+        assert_char_error(call_char(&mut state, &arguments).unwrap_err(), expected);
     }
 }
 
