@@ -6,6 +6,7 @@ mod format;
 mod formatting;
 mod gmatch;
 mod gsub;
+mod len;
 mod offsets;
 mod pack;
 mod packing;
@@ -21,6 +22,9 @@ use crate::set_field;
 
 pub(crate) fn install(state: &mut State) -> VmResult<()> {
     let string = state.create_table(0, 8)?;
+
+    let len = state.create_native_function("string.len", len::callback, &[])?;
+    set_field(state, &string, len::FUNCTION_NAME, &Value::Function(len))?;
 
     let byte = state.create_native_function("string.byte", byte::callback, &[])?;
     set_field(state, &string, byte::FUNCTION_NAME, &Value::Function(byte))?;

@@ -15,6 +15,33 @@ fn installed_state() -> State {
     state
 }
 
+fn call_len(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(len) = state.raw_get(&string_library, &string("len"))? else {
+        panic!("string.len was not installed as a function");
+    };
+
+    match state.call(&len, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.len unexpectedly yielded"),
+    }
+}
+
+fn assert_len_error(error: VmError, expected: &str) {
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: expected.into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.len"
+    ));
+}
+
 fn call_byte(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
     let Value::Table(string_library) = state.get_global(b"string")? else {
         panic!("string was not installed as a table");
@@ -160,6 +187,69 @@ fn assert_rep_error(error: VmError, expected: &str) {
         error.frames.first(),
         Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.rep"
     ));
+}
+
+#[test]
+fn install_registers_string_len() {
+    let mut state = installed_state();
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+
+    assert!(matches!(
+        state.raw_get(&string_library, &string("len")).unwrap(),
+        Value::Function(_)
+    ));
+}
+
+#[test]
+fn len_returns_the_string_length_in_bytes() {
+    let mut state = installed_state();
+
+    for (subject, expected) in [
+        (string(""), 0),
+        (string("abc"), 3),
+        (string([0x00, 0x7f, 0x80, 0xff]), 4),
+        (string("é"), 2),
+    ] {
+        assert_eq!(
+            call_len(&mut state, &[subject]).unwrap(),
+            vec![Value::Integer(expected)]
+        );
+    }
+}
+
+#[test]
+fn len_coerces_numbers_to_strings_and_ignores_extra_arguments() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        call_len(&mut state, &[Value::Integer(-123), string("ignored")]).unwrap(),
+        vec![Value::Integer(4)]
+    );
+}
+
+#[test]
+fn len_reports_lua_argument_errors() {
+    let mut state = installed_state();
+    let table = Value::Table(state.create_table(0, 0).unwrap());
+
+    for (arguments, expected) in [
+        (
+            vec![],
+            "bad argument #1 to 'len' (string expected, got no value)",
+        ),
+        (
+            vec![Value::Boolean(true)],
+            "bad argument #1 to 'len' (string expected, got boolean)",
+        ),
+        (
+            vec![table],
+            "bad argument #1 to 'len' (string expected, got table)",
+        ),
+    ] {
+        assert_len_error(call_len(&mut state, &arguments).unwrap_err(), expected);
+    }
 }
 
 #[test]
