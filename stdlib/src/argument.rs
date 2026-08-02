@@ -21,6 +21,22 @@ pub(crate) fn check_integer(
     }
 }
 
+pub(crate) fn check_float(
+    value: &LocalValue<'_>,
+    function: &'static str,
+    argument: usize,
+) -> VmResult<f64> {
+    match value.to_float() {
+        Some(value) => Ok(value),
+        None => Err(error::type_error(
+            function,
+            argument,
+            "number",
+            Some(value.type_name()),
+        )),
+    }
+}
+
 pub(crate) fn required_integer(
     context: &NativeContext<'_>,
     function: &'static str,
