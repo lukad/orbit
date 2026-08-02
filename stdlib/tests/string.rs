@@ -15,6 +15,33 @@ fn installed_state() -> State {
     state
 }
 
+fn call_byte(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(byte) = state.raw_get(&string_library, &string("byte"))? else {
+        panic!("string.byte was not installed as a function");
+    };
+
+    match state.call(&byte, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.byte unexpectedly yielded"),
+    }
+}
+
+fn assert_byte_error(error: VmError, expected: &str) {
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: expected.into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.byte"
+    ));
+}
+
 fn call_sub(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
     let Value::Table(string_library) = state.get_global(b"string")? else {
         panic!("string was not installed as a table");
@@ -106,6 +133,153 @@ fn assert_rep_error(error: VmError, expected: &str) {
         error.frames.first(),
         Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.rep"
     ));
+}
+
+#[test]
+fn install_registers_string_byte() {
+    let mut state = installed_state();
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+
+    assert!(matches!(
+        state.raw_get(&string_library, &string("byte")).unwrap(),
+        Value::Function(_)
+    ));
+}
+
+#[test]
+fn byte_returns_one_or_more_unsigned_byte_values() {
+    let mut state = installed_state();
+
+    for (arguments, expected) in [
+        (vec![string("abc")], vec![Value::Integer(97)]),
+        (
+            vec![string("abc"), Value::Integer(2)],
+            vec![Value::Integer(98)],
+        ),
+        (
+            vec![string("abc"), Value::Integer(1), Value::Integer(3)],
+            vec![Value::Integer(97), Value::Integer(98), Value::Integer(99)],
+        ),
+        (
+            vec![string("abc"), Value::Nil, Value::Integer(2)],
+            vec![Value::Integer(97), Value::Integer(98)],
+        ),
+    ] {
+        assert_eq!(call_byte(&mut state, &arguments).unwrap(), expected);
+    }
+}
+
+#[test]
+fn byte_supports_negative_clamped_and_empty_ranges() {
+    let mut state = installed_state();
+
+    for (arguments, expected) in [
+        (
+            vec![string("abc"), Value::Integer(-1)],
+            vec![Value::Integer(99)],
+        ),
+        (
+            vec![string("abc"), Value::Integer(-2), Value::Integer(-1)],
+            vec![Value::Integer(98), Value::Integer(99)],
+        ),
+        (
+            vec![string("abc"), Value::Integer(-10), Value::Integer(100)],
+            vec![Value::Integer(97), Value::Integer(98), Value::Integer(99)],
+        ),
+        (vec![string("")], vec![]),
+        (vec![string("abc"), Value::Integer(4)], vec![]),
+        (
+            vec![string("abc"), Value::Integer(-4), Value::Integer(-4)],
+            vec![],
+        ),
+        (
+            vec![string("abc"), Value::Integer(2), Value::Integer(1)],
+            vec![],
+        ),
+        (
+            vec![string("abc"), Value::Integer(3), Value::Integer(1)],
+            vec![],
+        ),
+        (
+            vec![string("abc"), Value::Integer(1), Value::Integer(0)],
+            vec![],
+        ),
+    ] {
+        assert_eq!(call_byte(&mut state, &arguments).unwrap(), expected);
+    }
+}
+
+#[test]
+fn byte_operates_on_raw_bytes_instead_of_unicode_characters() {
+    let mut state = installed_state();
+    let subject = string([0x00, 0x7f, 0x80, 0xff, 0xc3, 0xa9]);
+
+    assert_eq!(
+        call_byte(
+            &mut state,
+            &[subject, Value::Integer(1), Value::Integer(-1)]
+        )
+        .unwrap(),
+        vec![
+            Value::Integer(0),
+            Value::Integer(127),
+            Value::Integer(128),
+            Value::Integer(255),
+            Value::Integer(195),
+            Value::Integer(169),
+        ]
+    );
+}
+
+#[test]
+fn byte_coerces_numeric_strings_and_integer_indices() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        call_byte(
+            &mut state,
+            &[Value::Integer(123), string("2"), string("3.0")]
+        )
+        .unwrap(),
+        vec![Value::Integer(50), Value::Integer(51)]
+    );
+}
+
+#[test]
+fn byte_reports_lua_argument_errors() {
+    let mut state = installed_state();
+    let table = Value::Table(state.create_table(0, 0).unwrap());
+
+    for (arguments, expected) in [
+        (
+            vec![],
+            "bad argument #1 to 'byte' (string expected, got no value)",
+        ),
+        (
+            vec![table],
+            "bad argument #1 to 'byte' (string expected, got table)",
+        ),
+        (
+            vec![string("abc"), Value::Boolean(true)],
+            "bad argument #2 to 'byte' (number expected, got boolean)",
+        ),
+        (
+            vec![string("abc"), Value::Float(1.5)],
+            "bad argument #2 to 'byte' (number has no integer representation)",
+        ),
+        (
+            vec![string("abc"), Value::Integer(1), Value::Boolean(false)],
+            "bad argument #3 to 'byte' (number expected, got boolean)",
+        ),
+        (
+            vec![string("abc"), Value::Integer(1), string("2.5")],
+            "bad argument #3 to 'byte' (number has no integer representation)",
+        ),
+    ] {
+        assert_byte_error(call_byte(&mut state, &arguments).unwrap_err(), expected);
+    }
 }
 
 #[test]

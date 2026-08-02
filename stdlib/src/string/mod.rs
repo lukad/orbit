@@ -1,4 +1,5 @@
 mod arithmetic;
+mod byte;
 mod find;
 mod format;
 mod formatting;
@@ -19,6 +20,9 @@ use crate::set_field;
 
 pub(crate) fn install(state: &mut State) -> VmResult<()> {
     let string = state.create_table(0, 8)?;
+
+    let byte = state.create_native_function("string.byte", byte::callback, &[])?;
+    set_field(state, &string, byte::FUNCTION_NAME, &Value::Function(byte))?;
 
     let sub = state.create_native_function("string.sub", sub::callback, &[])?;
     set_field(state, &string, sub::FUNCTION_NAME, &Value::Function(sub))?;
