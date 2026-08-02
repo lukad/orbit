@@ -490,16 +490,46 @@ fn decode_unicode_escape(
     let Ok(value) = u32::from_str_radix(std::str::from_utf8(digits).unwrap(), 16) else {
         return (close + 1, None, Some(LexErrorKind::InvalidEscapeSequence));
     };
-    let Some(character) = char::from_u32(value) else {
+    let Some(encoded) = encode_lua_utf8(value) else {
         return (close + 1, None, Some(LexErrorKind::InvalidEscapeSequence));
     };
-    let mut utf8 = [0; 4];
 
-    (
-        close + 1,
-        Some(character.encode_utf8(&mut utf8).as_bytes().to_vec()),
-        None,
-    )
+    (close + 1, Some(encoded), None)
+}
+
+fn encode_lua_utf8(mut value: u32) -> Option<Vec<u8>> {
+    let length = match value {
+        0x0000_0000..=0x0000_007F => 1,
+        0x0000_0080..=0x0000_07FF => 2,
+        0x0000_0800..=0x0000_FFFF => 3,
+        0x0001_0000..=0x001F_FFFF => 4,
+        0x0020_0000..=0x03FF_FFFF => 5,
+        0x0400_0000..=0x7FFF_FFFF => 6,
+        _ => return None,
+    };
+
+    if length == 1 {
+        return Some(vec![value as u8]);
+    }
+
+    let mut bytes = vec![0; length];
+
+    for byte in bytes[1..].iter_mut().rev() {
+        *byte = 0x80 | (value & 0x3F) as u8;
+        value >>= 6;
+    }
+
+    let prefix = match length {
+        2 => 0xC0,
+        3 => 0xE0,
+        4 => 0xF0,
+        5 => 0xF8,
+        6 => 0xFC,
+        _ => unreachable!(),
+    };
+
+    bytes[0] = prefix | value as u8;
+    Some(bytes)
 }
 
 fn lex_long_string(lexer: &mut LogosLexer<'_, Token>) -> Result<ByteString, LexErrorKind> {
@@ -776,6 +806,14 @@ mod tests {
             tokens(r#""snowman: \u{2603}""#),
             vec![
                 Token::String(ByteString::from("snowman: ☃".as_bytes())),
+                Token::Eof,
+            ]
+        );
+
+        assert_eq!(
+            tokens(r#""\u{1FFFFF}""#),
+            vec![
+                Token::String(ByteString::from(&b"\xF7\xBF\xBF\xBF"[..])),
                 Token::Eof,
             ]
         );
