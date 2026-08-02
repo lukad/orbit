@@ -175,7 +175,7 @@ lua54_runtime_tests! {
     ignored runtime_coroutine => "coroutine.lua",
     enabled runtime_goto => "goto.lua",
     ignored runtime_errors => "errors.lua",
-    ignored runtime_math => "math.lua",
+    enabled runtime_math => "math.lua",
     ignored runtime_sort => "sort.lua",
     enabled runtime_bitwise => "bitwise.lua",
     ignored runtime_verybig => "verybig.lua",
