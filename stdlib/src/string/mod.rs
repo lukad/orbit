@@ -3,6 +3,7 @@ mod find;
 mod format;
 mod formatting;
 mod gmatch;
+mod gsub;
 mod offsets;
 mod pack;
 mod packing;
@@ -64,6 +65,9 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
 
     let gmatch = state.create_native_function("string.gmatch", gmatch::callback, &[])?;
     set_field(state, &string, gmatch::FUNCTION, &Value::Function(gmatch))?;
+
+    let gsub = state.create_native_function("string.gsub", gsub::callback, &[])?;
+    set_field(state, &string, gsub::FUNCTION, &Value::Function(gsub))?;
 
     let metatable = state.create_table(0, 9)?;
     set_field(state, &metatable, b"__index", &Value::Table(string.clone()))?;

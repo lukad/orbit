@@ -1,8 +1,8 @@
 use orbit_loader::Loader;
 use orbit_stdlib::install;
 use orbit_vm::{
-    CallOutcome, LuaString, NoLoadService, State, Value, VmError, VmErrorKind, VmResult,
-    VmTraceFrame,
+    CallOutcome, LuaString, NativeAction, NativeContext, NativeEvent, NativeToken, NoLoadService,
+    State, Value, VmError, VmErrorKind, VmResult, VmTraceFrame,
 };
 
 fn string(value: impl AsRef<[u8]>) -> Value {
@@ -1720,4 +1720,324 @@ fn gmatch_iterator_keeps_its_captures_alive_across_collection() {
         .unwrap(),
         vec![string("left"), string("right")]
     );
+}
+
+fn call_gsub(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(gsub) = state.raw_get(&string_library, &string("gsub"))? else {
+        panic!("string.gsub was not installed as a function");
+    };
+
+    match state.call(&gsub, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.gsub unexpectedly yielded"),
+    }
+}
+
+fn assert_gsub_error(error: VmError, expected: &str) {
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: expected.into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.gsub"
+    ));
+}
+
+#[test]
+fn install_registers_string_gsub() {
+    let mut state = installed_state();
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+
+    assert!(matches!(
+        state.raw_get(&string_library, &string("gsub")).unwrap(),
+        Value::Function(_)
+    ));
+}
+
+#[test]
+fn gsub_supports_string_replacements_captures_limits_and_anchors() {
+    assert_eq!(
+        execute_string_test(
+            r##"
+                local value, count = string.gsub("hello world", "(%w+)", "%1 %1")
+                assert(value == "hello hello world world" and count == 2)
+
+                value, count = string.gsub("hello world", "%w+", "%0 %0", 1)
+                assert(value == "hello hello world" and count == 1)
+
+                value, count = string.gsub(
+                    "hello world from Lua",
+                    "(%w+)%s*(%w+)",
+                    "%2 %1"
+                )
+                assert(value == "world hello Lua from" and count == 2)
+
+                value, count = string.gsub("abc", "%w", "%1%0")
+                assert(value == "aabbcc" and count == 3)
+
+                value, count = string.gsub("abc", "()", "%1")
+                assert(value == "1a2b3c4" and count == 4)
+
+                value, count = string.gsub("100%", "%%", "%%%%")
+                assert(value == "100%%" and count == 1)
+
+                value, count = string.gsub("abc abc", "^abc", "x")
+                assert(value == "x abc" and count == 1)
+
+                value, count = string.gsub("abc", "$", "x")
+                assert(value == "abcx" and count == 1)
+
+                value, count = string.gsub("abc", ".", "x", 0)
+                assert(value == "abc" and count == 0)
+
+                value, count = string.gsub("a", "a", 123)
+                assert(value == "123" and count == 1)
+
+                return true
+            "##,
+        )
+        .unwrap(),
+        vec![Value::Boolean(true)]
+    );
+}
+
+#[test]
+fn gsub_empty_matches_make_progress_without_losing_bytes() {
+    assert_eq!(
+        execute_string_test(
+            r#"
+                local value, count = string.gsub("a b cd", " *", "-")
+                assert(value == "-a-b-c-d-" and count == 5)
+
+                value, count = string.gsub("ab", "", "-")
+                assert(value == "-a-b-" and count == 3)
+
+                value, count = string.gsub("", "^", "x")
+                assert(value == "x" and count == 1)
+
+                return true
+            "#,
+        )
+        .unwrap(),
+        vec![Value::Boolean(true)]
+    );
+}
+
+#[test]
+fn gsub_function_replacements_receive_captures_and_process_results() {
+    assert_eq!(
+        execute_string_test(
+            r#"
+                local value, count = string.gsub(
+                    "a=1 b=2",
+                    "(%a)=(%d)",
+                    function(name, number)
+                        return number .. name
+                    end
+                )
+                assert(value == "1a 2b" and count == 2)
+
+                value, count = string.gsub("abc", ".", function(match)
+                    if match == "a" then return "A" end
+                    if match == "b" then return false end
+                    return nil
+                end)
+                assert(value == "Abc" and count == 3)
+
+                value, count = string.gsub("abc", "()", function(position)
+                    return position
+                end)
+                assert(value == "1a2b3c4" and count == 4)
+
+                local function reverse(subject)
+                    return string.gsub(subject, "(.)(.+)", function(first, rest)
+                        return reverse(rest) .. first
+                    end)
+                end
+                assert(reverse("abcdef") == "fedcba")
+
+                value, count = string.gsub("left right", "%w+", function(word)
+                    collectgarbage("collect")
+                    return "[" .. word .. "]"
+                end)
+                assert(value == "[left] [right]" and count == 2)
+
+                return true
+            "#,
+        )
+        .unwrap(),
+        vec![Value::Boolean(true)]
+    );
+}
+
+#[test]
+fn gsub_table_replacements_use_the_first_capture_and_index_metamethods() {
+    assert_eq!(
+        execute_string_test(
+            r#"
+                local replacements = setmetatable(
+                    {name = "lua", version = 5.4, skip = false},
+                    {__index = function(_, key) return "[" .. key .. "]" end}
+                )
+
+                local value, count = string.gsub(
+                    "$name-$version-$missing-$skip",
+                    "%$(%w+)",
+                    replacements
+                )
+                assert(value == "lua-5.4-[missing]-$skip" and count == 4)
+
+                value, count = string.gsub("a b", "%w+", {a = "A"})
+                assert(value == "A b" and count == 2)
+
+                value, count = string.gsub("abc", "().", {"x", "y", "z"})
+                assert(value == "xyz" and count == 3)
+
+                return true
+            "#,
+        )
+        .unwrap(),
+        vec![Value::Boolean(true)]
+    );
+}
+
+#[test]
+fn gsub_reports_argument_and_replacement_errors() {
+    let mut state = installed_state();
+
+    for (arguments, expected) in [
+        (
+            vec![],
+            "bad argument #1 to 'gsub' (string expected, got no value)",
+        ),
+        (
+            vec![string("abc")],
+            "bad argument #2 to 'gsub' (string expected, got no value)",
+        ),
+        (
+            vec![string("abc"), string(".")],
+            "bad argument #3 to 'gsub' (string/function/table expected, got no value)",
+        ),
+        (
+            vec![string("abc"), string("."), Value::Boolean(true)],
+            "bad argument #3 to 'gsub' (string/function/table expected, got boolean)",
+        ),
+        (
+            vec![string("abc"), string("."), string("x"), Value::Float(1.5)],
+            "bad argument #4 to 'gsub' (number has no integer representation)",
+        ),
+    ] {
+        assert_gsub_error(call_gsub(&mut state, &arguments).unwrap_err(), expected);
+    }
+
+    for (replacement, expected) in [
+        ("%", "invalid use of '%' in replacement string"),
+        ("%x", "invalid use of '%' in replacement string"),
+        ("%2", "invalid capture index %2"),
+    ] {
+        assert_gsub_error(
+            call_gsub(
+                &mut state,
+                &[string("abc"), string("."), string(replacement)],
+            )
+            .unwrap_err(),
+            expected,
+        );
+    }
+
+    let values = execute_string_test(
+        r#"
+            local function invalid() return {} end
+            local function explode() error("replacement exploded") end
+            local ok1, error1 = pcall(string.gsub, "a", ".", invalid)
+            local ok2, error2 = pcall(string.gsub, "a", ".", {a = {}})
+            local ok3, error3 = pcall(string.gsub, "a", ".", explode)
+            return ok1, error1, ok2, error2, ok3, error3
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(values[0], Value::Boolean(false));
+    assert_string_contains(&values[1], b"invalid replacement value (a table)");
+    assert_eq!(values[2], Value::Boolean(false));
+    assert_string_contains(&values[3], b"invalid replacement value (a table)");
+    assert_eq!(values[4], Value::Boolean(false));
+    assert_string_contains(&values[5], b"replacement exploded");
+}
+
+const GSUB_REPLACEMENT_RESUME: NativeToken = NativeToken::new(1);
+
+fn yielding_gsub_replacement(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
+    match context.event() {
+        NativeEvent::Start => Ok(context.yield_values(
+            [context
+                .argument(0)
+                .expect("gsub replacement receives the implicit whole-match capture")],
+            GSUB_REPLACEMENT_RESUME,
+        )),
+        NativeEvent::Resume {
+            token: GSUB_REPLACEMENT_RESUME,
+        } => Ok(context.return_values([context.resume_value(0).unwrap_or_else(|| context.nil())])),
+        NativeEvent::ResumeError {
+            token: GSUB_REPLACEMENT_RESUME,
+        } => Err(context
+            .resume_error()
+            .expect("replacement resume error contains an error")
+            .clone()),
+        NativeEvent::Resume { token } | NativeEvent::ResumeError { token } => {
+            panic!("unexpected replacement continuation token {}", token.get())
+        }
+    }
+}
+
+#[test]
+fn gsub_function_replacements_can_yield_and_keep_progress_alive() {
+    let mut state = installed_state();
+    let replacement = state
+        .create_native_function("yielding gsub replacement", yielding_gsub_replacement, &[])
+        .unwrap();
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(gsub) = state.raw_get(&string_library, &string("gsub")).unwrap() else {
+        panic!("string.gsub was not installed as a function");
+    };
+
+    let CallOutcome::Yielded {
+        values,
+        mut suspension,
+    } = state
+        .call(
+            &gsub,
+            &[string("a b"), string("%w+"), Value::Function(replacement)],
+        )
+        .unwrap()
+    else {
+        panic!("first gsub replacement did not yield");
+    };
+    assert_eq!(values, vec![string("a")]);
+    suspension.collect_garbage().unwrap();
+
+    let CallOutcome::Yielded {
+        values,
+        mut suspension,
+    } = suspension.resume(&[string("A")]).unwrap()
+    else {
+        panic!("second gsub replacement did not yield");
+    };
+    assert_eq!(values, vec![string("b")]);
+    suspension.collect_garbage().unwrap();
+
+    let CallOutcome::Returned(values) = suspension.resume(&[string("B")]).unwrap() else {
+        panic!("resumed gsub unexpectedly yielded a third time");
+    };
+    assert_eq!(values, vec![string("A B"), Value::Integer(2)]);
 }
