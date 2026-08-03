@@ -164,7 +164,7 @@ lua54_runtime_tests! {
     ignored runtime_calls => "calls.lua",
     ignored runtime_strings => "strings.lua",
     ignored runtime_literals => "literals.lua",
-    ignored runtime_tpack => "tpack.lua",
+    enabled runtime_tpack => "tpack.lua",
     ignored runtime_attrib => "attrib.lua",
     ignored runtime_gengc => "gengc.lua",
     ignored runtime_locals => "locals.lua",
