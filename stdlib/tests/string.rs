@@ -96,6 +96,33 @@ fn assert_char_error(error: VmError, expected: &str) {
     ));
 }
 
+fn call_reverse(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
+    let Value::Table(string_library) = state.get_global(b"string")? else {
+        panic!("string was not installed as a table");
+    };
+    let Value::Function(reverse) = state.raw_get(&string_library, &string("reverse"))? else {
+        panic!("string.reverse was not installed as a function");
+    };
+
+    match state.call(&reverse, arguments)? {
+        CallOutcome::Returned(values) => Ok(values),
+        CallOutcome::Yielded { .. } => panic!("string.reverse unexpectedly yielded"),
+    }
+}
+
+fn assert_reverse_error(error: VmError, expected: &str) {
+    assert_eq!(
+        error.kind,
+        VmErrorKind::NativeFunctionFailure {
+            message: expected.into(),
+        }
+    );
+    assert!(matches!(
+        error.frames.first(),
+        Some(VmTraceFrame::Native { name }) if name.as_ref() == "string.reverse"
+    ));
+}
+
 fn call_sub(state: &mut State, arguments: &[Value]) -> VmResult<Vec<Value>> {
     let Value::Table(string_library) = state.get_global(b"string")? else {
         panic!("string was not installed as a table");
@@ -807,6 +834,80 @@ fn rep_rejects_results_that_are_too_large() {
     ] {
         let error = call_rep(&mut state, &arguments).unwrap_err();
         assert_rep_error(error, "resulting string too large");
+    }
+}
+
+#[test]
+fn install_registers_string_reverse() {
+    let mut state = installed_state();
+    let Value::Table(string_library) = state.get_global(b"string").unwrap() else {
+        panic!("string was not installed as a table");
+    };
+
+    assert!(matches!(
+        state.raw_get(&string_library, &string("reverse")).unwrap(),
+        Value::Function(_)
+    ));
+}
+
+#[test]
+fn reverse_reverses_strings_one_byte_at_a_time() {
+    let mut state = installed_state();
+
+    for (subject, expected) in [
+        (string(""), string("")),
+        (string("a"), string("a")),
+        (string("abcdef"), string("fedcba")),
+        (
+            string([0x00, 0x7f, 0x80, 0xff, 0xc3, 0xa9]),
+            string([0xa9, 0xc3, 0xff, 0x80, 0x7f, 0x00]),
+        ),
+    ] {
+        assert_eq!(
+            call_reverse(&mut state, &[subject]).unwrap(),
+            vec![expected]
+        );
+    }
+}
+
+#[test]
+fn reverse_coerces_numbers_and_ignores_extra_arguments() {
+    let mut state = installed_state();
+
+    assert_eq!(
+        call_reverse(&mut state, &[Value::Integer(-123), string("ignored")]).unwrap(),
+        vec![string("321-")]
+    );
+}
+
+#[test]
+fn reverse_is_available_as_a_string_method() {
+    assert_eq!(
+        execute_string_test(r#"return ("abcdef"):reverse()"#).unwrap(),
+        vec![string("fedcba")]
+    );
+}
+
+#[test]
+fn reverse_reports_lua_argument_errors() {
+    let mut state = installed_state();
+    let table = Value::Table(state.create_table(0, 0).unwrap());
+
+    for (arguments, expected) in [
+        (
+            vec![],
+            "bad argument #1 to 'reverse' (string expected, got no value)",
+        ),
+        (
+            vec![Value::Boolean(true)],
+            "bad argument #1 to 'reverse' (string expected, got boolean)",
+        ),
+        (
+            vec![table],
+            "bad argument #1 to 'reverse' (string expected, got table)",
+        ),
+    ] {
+        assert_reverse_error(call_reverse(&mut state, &arguments).unwrap_err(), expected);
     }
 }
 

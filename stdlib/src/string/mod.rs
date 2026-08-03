@@ -13,6 +13,7 @@ mod packing;
 mod packsize;
 mod pattern;
 mod rep;
+mod reverse;
 mod sub;
 mod unpack;
 
@@ -34,6 +35,14 @@ pub(crate) fn install(state: &mut State) -> VmResult<()> {
 
     let sub = state.create_native_function("string.sub", sub::callback, &[])?;
     set_field(state, &string, sub::FUNCTION_NAME, &Value::Function(sub))?;
+
+    let reverse = state.create_native_function("string.reverse", reverse::callback, &[])?;
+    set_field(
+        state,
+        &string,
+        reverse::FUNCTION_NAME,
+        &Value::Function(reverse),
+    )?;
 
     let pack = state.create_native_function("string.pack", pack::callback, &[])?;
     set_field(state, &string, pack::FUNCTION_NAME, &Value::Function(pack))?;
