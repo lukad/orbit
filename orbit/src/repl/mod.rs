@@ -203,15 +203,15 @@ fn is_incomplete_input(error: &VmError, source_len: usize) -> bool {
                 )
         }
         LoadError::Parse(error) => {
-            let found_eof = match error.kind {
+            let found_eof = match &error.kind {
                 ParseErrorKind::ExpectedToken { actual, .. }
                 | ParseErrorKind::ExpectedExpression { actual }
-                | ParseErrorKind::ExpectedStatement { actual } => actual == Some(TokenKind::Eof),
+                | ParseErrorKind::ExpectedStatement { actual } => *actual == Some(TokenKind::Eof),
                 _ => false,
             };
             let error_at_eof = usize::try_from(error.span.start) == Ok(source_len);
 
-            found_eof || (error_at_eof && matches!(error.kind, ParseErrorKind::ExpectedArguments))
+            found_eof || (error_at_eof && matches!(&error.kind, ParseErrorKind::ExpectedArguments))
         }
         _ => false,
     }

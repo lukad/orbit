@@ -1,5 +1,5 @@
 use orbit_vm::{
-    LoadSource, LocalValue, NativeAction, NativeContext, NativeEvent, NativeToken, VmError,
+    LoadError, LoadSource, LocalValue, NativeAction, NativeContext, NativeEvent, NativeToken,
     VmErrorKind, VmResult,
 };
 
@@ -168,14 +168,49 @@ fn compile(context: &mut NativeContext<'_>, name: &[u8], source: &[u8]) -> VmRes
 
     match context.load_source(LoadSource::Buffer { name, source }, environment) {
         Ok(function) => Ok(context.return_values([function])),
-        Err(
-            error @ VmError {
-                kind: VmErrorKind::LoadFailure(_),
-                ..
-            },
-        ) => Ok(return_failure(context, error.kind.to_string())),
+        Err(error) => match &error.kind {
+            VmErrorKind::LoadFailure(load_error) => Ok(return_failure(
+                context,
+                format_load_error(name, source, load_error),
+            )),
+            _ => Err(error),
+        },
+    }
+}
 
-        Err(error) => Err(error),
+fn format_load_error(name: &[u8], source: &[u8], error: &LoadError) -> String {
+    let message = match error {
+        LoadError::Resolve { diagnostics } => diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; "),
+        _ => error.to_string(),
+    };
+
+    let Some(span) = error.primary_span() else {
+        return message;
+    };
+
+    let offset = usize::try_from(span.start)
+        .unwrap_or(usize::MAX)
+        .min(source.len());
+    let line = source[..offset]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1;
+
+    format!("{}:{line}: {message}", chunk_name(name))
+}
+
+fn chunk_name(name: &[u8]) -> String {
+    match name.first() {
+        Some(b'=' | b'@') => String::from_utf8_lossy(&name[1..]).into_owned(),
+        _ => {
+            let first_line = name.split(|byte| *byte == b'\n').next().unwrap_or_default();
+            format!("[string \"{}\"]", String::from_utf8_lossy(first_line))
+        }
     }
 }
 

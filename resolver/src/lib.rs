@@ -933,10 +933,7 @@ impl<'ast> Resolver<'ast> {
         if local.attribute.is_some() {
             return Err(Diagnostic::error(
                 assignment_span,
-                format!(
-                    "cannot assign to immutable local `{}` declared at {}..{}",
-                    local.name, local.span.start, local.span.end
-                ),
+                format!("attempt to assign to const variable '{}'", local.name),
             ));
         }
         Ok(())
@@ -948,15 +945,12 @@ impl<'ast> Resolver<'ast> {
         assignment_span: Span,
     ) -> Result<(), Diagnostic> {
         let current = self.functions.len() - 1;
-        if let Some((name, declaration_span, attribute)) = self.captured_local(current, upvalue)
+        if let Some((name, _, attribute)) = self.captured_local(current, upvalue)
             && attribute.is_some()
         {
             return Err(Diagnostic::error(
                 assignment_span,
-                format!(
-                    "cannot assign to immutable captured local `{name}` declared at {}..{}",
-                    declaration_span.start, declaration_span.end
-                ),
+                format!("attempt to assign to const variable '{name}'"),
             ));
         }
         Ok(())
@@ -1540,7 +1534,7 @@ mod tests {
         assert_eq!(
             messages
                 .iter()
-                .filter(|message| message.contains("immutable local"))
+                .filter(|message| message.contains("attempt to assign to const variable"))
                 .count(),
             2
         );
@@ -1564,7 +1558,10 @@ mod tests {
         )
         .expect_err("captured const assignment should fail");
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].message.contains("immutable captured local"));
+        assert_eq!(
+            diagnostics[0].message,
+            "attempt to assign to const variable 'immutable'"
+        );
     }
 
     #[test]

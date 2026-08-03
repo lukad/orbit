@@ -10,14 +10,14 @@ use crate::ast::{
 };
 use crate::lexer::{Symbol, Token, TokenKind};
 
-#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 #[error("{kind}")]
 pub struct ParseError {
     pub kind: ParseErrorKind,
     pub span: Span,
 }
 
-#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum ParseErrorKind {
     #[error("expected {expected:?}, but found {actual:?}")]
     ExpectedToken {
@@ -34,8 +34,8 @@ pub enum ParseErrorKind {
     InvalidAssignmentTarget,
     #[error("expected function arguments")]
     ExpectedArguments,
-    #[error("unknown local variable attribute")]
-    InvalidLocalAttribute,
+    #[error("unknown attribute '{attribute}'")]
+    InvalidLocalAttribute { attribute: Symbol },
     #[error("a return statement must be the final statement in its block")]
     StatementAfterReturn,
     #[error("expected EOF, but found {actual:?}")]
@@ -175,9 +175,13 @@ impl Parser {
                 "const" => LocalAttribute::Const,
                 "close" => LocalAttribute::Close,
                 _ => {
-                    return Err(
-                        self.error_at(ParseErrorKind::InvalidLocalAttribute, attribute_name.span)
-                    );
+                    let span = attribute_name.span;
+                    return Err(self.error_at(
+                        ParseErrorKind::InvalidLocalAttribute {
+                            attribute: attribute_name.value,
+                        },
+                        span,
+                    ));
                 }
             };
             let close = self.expect(TokenKind::Greater)?;
@@ -1041,6 +1045,21 @@ mod tests {
         );
         assert!(matches!(chunk.statements[1].kind, StmtKind::Label(_)));
         assert!(matches!(chunk.statements[2].kind, StmtKind::Goto(_)));
+    }
+
+    #[test]
+    fn rejects_unknown_local_attributes_with_their_name() {
+        let tokens = lex(SOURCE_ID, "local x <XXX> = 10").unwrap();
+        let error = parse_chunk(SOURCE_ID, tokens).unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            ParseErrorKind::InvalidLocalAttribute {
+                attribute: Symbol::from("XXX")
+            }
+        );
+        assert_eq!(error.to_string(), "unknown attribute 'XXX'");
+        assert_eq!(error.span, Span::new(SOURCE_ID, 9, 12));
     }
 
     #[test]
