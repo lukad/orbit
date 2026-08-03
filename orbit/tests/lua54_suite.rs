@@ -14,18 +14,20 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, ExitStatus, Stdio},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    thread,
+    time::{Duration, Instant},
 };
 
 use orbit_common::SourceId;
 use orbit_loader::Loader;
 use orbit_vm::{LoadService, LoadSource};
 
-const KNOWN_COMPILE_FAILURES: &[&str] = &["literals.lua", "strings.lua", "utf8.lua"];
+const KNOWN_COMPILE_FAILURES: &[&str] = &["strings.lua"];
 
 const INDIVIDUAL_RUNNER_PRELUDE: &str = r#"
 _U = true
@@ -36,6 +38,10 @@ T = nil
 
 function Message (_) end
 "#;
+
+const RUNTIME_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_REPORTED_OUTPUT_BYTES: usize = 8 * 1024;
 
 static NEXT_RUNNER_ID: AtomicU64 = AtomicU64::new(0);
 static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -193,23 +199,100 @@ fn run_upstream_file(test: &str) {
         let _guard = RUNTIME_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Command::new(env!("CARGO_BIN_EXE_orbit"))
-            .arg(runner.path())
-            .current_dir(&directory)
-            .output()
+        run_with_timeout(&runner, &directory, RUNTIME_TEST_TIMEOUT)
             .unwrap_or_else(|error| panic!("failed to launch Orbit for {test}: {error}"))
     };
 
     assert!(
+        !output.timed_out,
+        "{test} timed out after {} seconds; the Orbit child process was killed\n\nstdout:\n{}\nstderr:\n{}",
+        RUNTIME_TEST_TIMEOUT.as_secs(),
+        reported_output(&output.stdout),
+        reported_output(&output.stderr),
+    );
+
+    assert!(
         output.status.success(),
         "{test} failed\n\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        reported_output(&output.stdout),
+        reported_output(&output.stderr),
     );
+}
+
+fn reported_output(output: &[u8]) -> String {
+    if output.len() <= MAX_REPORTED_OUTPUT_BYTES {
+        return String::from_utf8_lossy(output).into_owned();
+    }
+
+    format!(
+        "{}\n... <{} additional bytes omitted>",
+        String::from_utf8_lossy(&output[..MAX_REPORTED_OUTPUT_BYTES]),
+        output.len() - MAX_REPORTED_OUTPUT_BYTES,
+    )
+}
+
+struct RuntimeOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    timed_out: bool,
+}
+
+fn run_with_timeout(
+    runner: &TemporaryRunner,
+    directory: &Path,
+    timeout: Duration,
+) -> std::io::Result<RuntimeOutput> {
+    // Files cannot fill up and block a noisy child like piped output can. This
+    // keeps the parent able to enforce the deadline even for recursive loads.
+    let stdout = fs::File::create(&runner.stdout_path)?;
+    let stderr = fs::File::create(&runner.stderr_path)?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orbit"))
+        .arg(runner.path())
+        .current_dir(directory)
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()?;
+    let started = Instant::now();
+
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait()? {
+            break (status, false);
+        }
+
+        if started.elapsed() >= timeout {
+            child.kill()?;
+            break (child.wait()?, true);
+        }
+
+        thread::sleep(CHILD_POLL_INTERVAL);
+    };
+
+    Ok(RuntimeOutput {
+        status,
+        stdout: fs::read(&runner.stdout_path)?,
+        stderr: fs::read(&runner.stderr_path)?,
+        timed_out,
+    })
+}
+
+#[test]
+fn runtime_runner_kills_a_hung_child() {
+    let runner = TemporaryRunner::new();
+    fs::write(runner.path(), b"while true do end")
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", runner.path().display()));
+
+    let output = run_with_timeout(&runner, &suite_dir(), Duration::from_millis(100))
+        .expect("failed to launch timeout regression child");
+
+    assert!(output.timed_out);
+    assert!(!output.status.success());
 }
 
 struct TemporaryRunner {
     path: PathBuf,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
 }
 
 impl TemporaryRunner {
@@ -219,7 +302,13 @@ impl TemporaryRunner {
             "orbit-lua54-runner-{}-{id}.lua",
             std::process::id()
         ));
-        Self { path }
+        let stdout_path = path.with_extension("stdout");
+        let stderr_path = path.with_extension("stderr");
+        Self {
+            path,
+            stdout_path,
+            stderr_path,
+        }
     }
 
     fn path(&self) -> &Path {
@@ -236,5 +325,7 @@ impl TemporaryRunner {
 impl Drop for TemporaryRunner {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(&self.stdout_path);
+        let _ = fs::remove_file(&self.stderr_path);
     }
 }
