@@ -48,10 +48,7 @@ fn resume(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
         .ok_or_else(|| error::failure("'tostring' must return a string"))?;
 
     let format_value = argument::required_string(context, FUNCTION_NAME, 0)?;
-    let format = format_value
-        .as_string()
-        .expect("required_string returns a string")
-        .as_bytes();
+    let format = format_value.as_bytes();
 
     let (spec, consumed) =
         FormatSpec::parse(&format[cursor..]).map_err(|error| error::failure(error.to_string()))?;
@@ -130,10 +127,7 @@ fn run<'context>(
     mut argument_index: usize,
 ) -> VmResult<NativeAction> {
     let format_value = argument::required_string(context, FUNCTION_NAME, 0)?;
-    let format = format_value
-        .as_string()
-        .expect("required_string returns a string")
-        .as_bytes();
+    let format = format_value.as_bytes();
 
     while cursor < format.len() {
         if format[cursor] != b'%' {

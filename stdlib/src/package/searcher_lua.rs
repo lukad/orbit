@@ -3,8 +3,8 @@ use orbit_vm::{
     VmResult,
 };
 
-use super::{check_string, path};
-use crate::error;
+use super::path;
+use crate::{argument::required_string, error};
 
 const FUNCTION_NAME: &str = "package Lua searcher";
 const PATH_LOOKUP: NativeToken = NativeToken::new(1);
@@ -30,7 +30,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
 }
 
 fn start(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
-    let name = check_string(context, 0, FUNCTION_NAME)?;
+    let name = required_string(context, FUNCTION_NAME, 0)?.into_value();
 
     let package = context
         .capture(0)

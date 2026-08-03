@@ -6,9 +6,9 @@ mod searchpath;
 
 use std::env;
 
-use orbit_vm::{LocalValue, LuaString, NativeContext, State, Value, VmResult};
+use orbit_vm::{LuaString, State, Value, VmResult};
 
-use crate::{error, set_field};
+use crate::set_field;
 
 const DEFAULT_PATH: &[u8] = b"./?.lua;./?/init.lua";
 
@@ -106,25 +106,4 @@ fn initial_path() -> LuaString {
 
     expanded.extend_from_slice(remaining);
     LuaString::from(expanded)
-}
-
-pub(crate) fn check_string<'context>(
-    context: &NativeContext<'context>,
-    index: usize,
-    function: &'static str,
-) -> VmResult<LocalValue<'context>> {
-    let value = context
-        .argument(index)
-        .ok_or_else(|| error::type_error(function, index + 1, "string", None))?;
-
-    match value.type_name() {
-        "string" => Ok(value),
-        "number" => Ok(context.default_tostring(&value, None)),
-        _ => Err(error::type_error(
-            function,
-            index + 1,
-            "string",
-            Some(value.type_name()),
-        )),
-    }
 }

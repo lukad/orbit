@@ -86,10 +86,7 @@ fn checked_arguments<'context>(
         ));
     }
 
-    let subject_len = subject
-        .as_string()
-        .expect("required string is a string")
-        .len();
+    let subject_len = subject.len();
     let default_limit = i64::try_from(subject_len)
         .unwrap_or(i64::MAX)
         .saturating_add(1);
@@ -99,7 +96,12 @@ fn checked_arguments<'context>(
         Some(value) => check_integer(&value, FUNCTION, 4)?,
     };
 
-    Ok((subject, pattern, replacement, limit))
+    Ok((
+        subject.into_value(),
+        pattern.into_value(),
+        replacement,
+        limit,
+    ))
 }
 
 fn run<'context>(

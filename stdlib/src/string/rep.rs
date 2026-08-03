@@ -9,10 +9,7 @@ pub(crate) const FUNCTION: &str = "rep";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let string = required_string(context, FUNCTION, 0)?;
-    let bytes = string
-        .as_string()
-        .expect("required_string always returns a string")
-        .as_bytes();
+    let bytes = string.as_bytes();
 
     let n = required_integer(context, FUNCTION, 1)?.max(0) as usize;
 
@@ -26,12 +23,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
     };
     let separator = separator
         .as_ref()
-        .map(|value| {
-            value
-                .as_string()
-                .expect("required_string always returns a string")
-                .as_bytes()
-        })
+        .map(|value| value.as_bytes())
         .unwrap_or(&[]);
 
     let total = bytes

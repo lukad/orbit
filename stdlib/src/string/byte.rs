@@ -2,15 +2,13 @@ use orbit_vm::{NativeAction, NativeContext, VmResult};
 
 use crate::{
     argument::{check_integer, required_string},
-    string::offsets::{end_offset, start_offset},
+    offsets::{end_offset, start_offset},
 };
 
 pub const FUNCTION_NAME: &str = "byte";
 
 pub fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let string = required_string(context, FUNCTION_NAME, 0)?
-        .as_string()
-        .expect("required string is a string")
         .as_bytes()
         .to_vec();
 

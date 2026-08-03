@@ -10,16 +10,10 @@ pub(crate) const FUNCTION_NAME: &str = "unpack";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let format_value = required_string(context, FUNCTION_NAME, 0)?;
-    let format = format_value
-        .as_string()
-        .expect("required_string always returns a string")
-        .as_bytes();
+    let format = format_value.as_bytes();
 
     let data_value = required_string(context, FUNCTION_NAME, 1)?;
-    let data = data_value
-        .as_string()
-        .expect("required_string always returns a string")
-        .as_bytes();
+    let data = data_value.as_bytes();
 
     let requested_position = match context.argument(2) {
         None => 1,

@@ -2,8 +2,7 @@ use orbit_vm::{
     LocalValue, NativeAction, NativeContext, NativeEvent, NativeToken, VmError, VmResult,
 };
 
-use super::check_string;
-use crate::error;
+use crate::{argument::required_string, error};
 
 const FUNCTION_NAME: &str = "require";
 
@@ -48,7 +47,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
 }
 
 fn start(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
-    let name = check_string(context, 0, FUNCTION_NAME)?;
+    let name = required_string(context, FUNCTION_NAME, 0)?.into_value();
     let loaded = loaded_table(context);
 
     Ok(context.get_with_continuation(loaded, name.clone(), [name], LOADED_LOOKUP))

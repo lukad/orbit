@@ -2,10 +2,8 @@ use orbit_vm::{LocalValue, NativeAction, NativeContext, VmResult};
 
 use crate::{
     argument::{check_integer, required_string},
-    string::{
-        offsets::start_offset,
-        pattern::{self, CaptureValue, Match},
-    },
+    offsets::start_offset,
+    string::pattern::{self, CaptureValue, Match},
 };
 
 pub(crate) const FUNCTION: &str = "gmatch";
@@ -30,10 +28,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
         Some(value) => check_integer(&value, FUNCTION, 3)?,
     };
 
-    let subject_len = subject
-        .as_string()
-        .expect("required string is a string")
-        .len();
+    let subject_len = subject.len();
 
     let past_end =
         requested_start > 0 && (requested_start as u64) > (subject_len as u64).saturating_add(1);
@@ -52,8 +47,11 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
         context.integer(NO_OFFSET),
     )?;
 
-    let iterator =
-        context.create_native_function(ITERATOR_NAME, iterator, [subject, pattern, state])?;
+    let iterator = context.create_native_function(
+        ITERATOR_NAME,
+        iterator,
+        [subject.into_value(), pattern.into_value(), state],
+    )?;
 
     Ok(context.return_values([iterator]))
 }

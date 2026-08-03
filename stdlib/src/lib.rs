@@ -5,6 +5,7 @@ mod basic;
 mod debug;
 mod error;
 mod math;
+mod offsets;
 mod package;
 mod string;
 mod table;

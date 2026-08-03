@@ -1,4 +1,6 @@
-use orbit_vm::{LocalValue, NativeContext, VmResult};
+use std::ops::Deref;
+
+use orbit_vm::{LocalValue, LuaString, NativeContext, VmResult};
 
 use crate::error;
 
@@ -37,6 +39,47 @@ pub(crate) fn check_float(
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CheckedString<'context>(LocalValue<'context>);
+
+impl<'context> CheckedString<'context> {
+    pub(crate) fn into_value(self) -> LocalValue<'context> {
+        self.0
+    }
+}
+
+impl Deref for CheckedString<'_> {
+    type Target = LuaString;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_string()
+            .expect("CheckedString always contains a string")
+    }
+}
+
+pub(crate) fn check_string<'context>(
+    context: &NativeContext<'context>,
+    value: LocalValue<'context>,
+    function: &'static str,
+    index: usize,
+) -> VmResult<CheckedString<'context>> {
+    let value = match value.type_name() {
+        "string" => value,
+        "number" => context.default_tostring(&value, None),
+        _ => {
+            return Err(error::type_error(
+                function,
+                index + 1,
+                "string",
+                Some(value.type_name()),
+            ));
+        }
+    };
+
+    Ok(CheckedString(value))
+}
+
 pub(crate) fn required_integer(
     context: &NativeContext<'_>,
     function: &'static str,
@@ -67,19 +110,10 @@ pub(crate) fn required_string<'context>(
     context: &NativeContext<'context>,
     function: &'static str,
     index: usize,
-) -> VmResult<LocalValue<'context>> {
+) -> VmResult<CheckedString<'context>> {
     let value = context
         .argument(index)
         .ok_or_else(|| error::type_error(function, index + 1, "string", None))?;
 
-    match value.type_name() {
-        "string" => Ok(value),
-        "number" => Ok(context.default_tostring(&value, None)),
-        _ => Err(error::type_error(
-            function,
-            index + 1,
-            "string",
-            Some(value.type_name()),
-        )),
-    }
+    check_string(context, value, function, index)
 }

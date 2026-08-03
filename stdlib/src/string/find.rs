@@ -2,26 +2,18 @@ use orbit_vm::{NativeAction, NativeContext, VmResult};
 
 use crate::{
     argument,
-    string::{
-        offsets::start_offset,
-        pattern::{self, CaptureValue},
-    },
+    offsets::start_offset,
+    string::pattern::{self, CaptureValue},
 };
 
 pub(crate) const FUNCTION: &str = "find";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let subject = argument::required_string(context, FUNCTION, 0)?;
-    let subject = subject
-        .as_string()
-        .expect("required string is a string")
-        .as_bytes();
+    let subject = subject.as_bytes();
 
     let pat = argument::required_string(context, FUNCTION, 1)?;
-    let pat = pat
-        .as_string()
-        .expect("required string is a string")
-        .as_bytes();
+    let pat = pat.as_bytes();
 
     let raw_start = match context.argument(2) {
         None => 1,

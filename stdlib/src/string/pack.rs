@@ -14,10 +14,7 @@ pub(crate) const FUNCTION_NAME: &str = "pack";
 
 pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction> {
     let format_value = required_string(context, FUNCTION_NAME, 0)?;
-    let format = format_value
-        .as_string()
-        .expect("required_string always returns a string")
-        .as_bytes();
+    let format = format_value.as_bytes();
 
     let mut parser = FormatParser::new(format);
     let mut output = Vec::new();
@@ -57,10 +54,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
             }
             ItemKind::FixedString => {
                 let value = required_string(context, FUNCTION_NAME, argument)?;
-                let bytes = value
-                    .as_string()
-                    .expect("required_string always returns a string")
-                    .as_bytes();
+                let bytes = value.as_bytes();
 
                 if bytes.len() > item.size {
                     return Err(error::argument_error(
@@ -76,10 +70,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
             }
             ItemKind::LengthString => {
                 let value = required_string(context, FUNCTION_NAME, argument)?;
-                let bytes = value
-                    .as_string()
-                    .expect("required_string always returns a string")
-                    .as_bytes();
+                let bytes = value.as_bytes();
 
                 if item.size < size_of::<usize>() && bytes.len() >= (1usize << (item.size * 8)) {
                     return Err(error::argument_error(
@@ -100,10 +91,7 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
             }
             ItemKind::ZeroString => {
                 let value = required_string(context, FUNCTION_NAME, argument)?;
-                let bytes = value
-                    .as_string()
-                    .expect("required_string always returns a string")
-                    .as_bytes();
+                let bytes = value.as_bytes();
 
                 if bytes.contains(&0) {
                     return Err(error::argument_error(

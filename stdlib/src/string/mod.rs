@@ -7,7 +7,6 @@ mod formatting;
 mod gmatch;
 mod gsub;
 mod len;
-mod offsets;
 mod pack;
 mod packing;
 mod packsize;

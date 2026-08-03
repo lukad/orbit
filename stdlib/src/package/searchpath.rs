@@ -1,7 +1,10 @@
-use orbit_vm::{LocalValue, NativeAction, NativeContext, NativeEvent, VmResult};
+use orbit_vm::{NativeAction, NativeContext, NativeEvent, VmResult};
 
-use super::{check_string, path};
-use crate::error;
+use super::path;
+use crate::{
+    argument::{CheckedString, check_string, required_string},
+    error,
+};
 
 const FUNCTION_NAME: &str = "searchpath";
 
@@ -18,16 +21,20 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
         ));
     }
 
-    let name = check_string(context, 0, FUNCTION_NAME)?;
-    let search_path = check_string(context, 1, FUNCTION_NAME)?;
+    let name = required_string(context, FUNCTION_NAME, 0)?;
+    let search_path = required_string(context, FUNCTION_NAME, 1)?;
 
-    let separator = optional_string(context, 2, b".")?;
-    let replacement = optional_string(context, 3, DIRECTORY_SEPARATOR)?;
+    let separator = optional_string(context, 2)?;
+    let replacement = optional_string(context, 3)?;
 
-    let name = name.as_string().unwrap().as_bytes();
-    let search_path = search_path.as_string().unwrap().as_bytes();
-    let separator = separator.as_string().unwrap().as_bytes();
-    let replacement = replacement.as_string().unwrap().as_bytes();
+    let name = name.as_bytes();
+    let search_path = search_path.as_bytes();
+    let separator = separator
+        .as_ref()
+        .map_or(b".".as_slice(), |value| value.as_bytes());
+    let replacement = replacement
+        .as_ref()
+        .map_or(DIRECTORY_SEPARATOR, |value| value.as_bytes());
 
     match path::search(context, name, search_path, separator, replacement) {
         Ok(filename) => Ok(context.return_values([context.string(filename)])),
@@ -38,18 +45,10 @@ pub(crate) fn callback(context: &mut NativeContext<'_>) -> VmResult<NativeAction
 fn optional_string<'context>(
     context: &NativeContext<'context>,
     index: usize,
-    default: &[u8],
-) -> VmResult<LocalValue<'context>> {
+) -> VmResult<Option<CheckedString<'context>>> {
     match context.argument(index) {
-        None => Ok(context.string(default)),
-        Some(value) if value.is_nil() => Ok(context.string(default)),
-        Some(value) if value.type_name() == "string" => Ok(value),
-        Some(value) if value.type_name() == "number" => Ok(context.default_tostring(&value, None)),
-        Some(value) => Err(error::type_error(
-            FUNCTION_NAME,
-            index + 1,
-            "string",
-            Some(value.type_name()),
-        )),
+        None => Ok(None),
+        Some(value) if value.is_nil() => Ok(None),
+        Some(value) => check_string(context, value, FUNCTION_NAME, index).map(Some),
     }
 }
